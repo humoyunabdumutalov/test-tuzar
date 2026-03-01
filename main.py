@@ -1,3 +1,5 @@
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from fpdf import FPDF
 import asyncio
 import os
 import io
@@ -394,15 +396,58 @@ async def generate_and_save(message: types.Message, prompt: str, wait_msg: types
         bot_info = await bot.get_me()
         bot_username = bot_info.username
 
-        xabar = (f"✅ Barcha testlar tayyorlandi!\n\n🔗 Ulashish yoki yechish uchun bosing:\n"
-                 f"👉 https://t.me/{bot_username}?start={quiz_id}")
-        await message.answer(xabar, reply_markup=asosiy_menyu)
+       bot_info = await bot.get_me()
+        bot_username = bot_info.username
+        
+        test_link = f"https://t.me/{bot_username}?start={quiz_id}"
+        share_link = f"https://t.me/share/url?url={test_link}&text=Yangi testni yechib ko'ring!"
+        
+        inline_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚀 Testni yechish", url=test_link)],
+            [InlineKeyboardButton(text="🔗 Ulashish", url=share_link)],
+            [InlineKeyboardButton(text="📥 PDF yuklab olish", callback_data=f"pdf_{quiz_id}")]
+        ])
+        
+        await message.answer("✅ Barcha testlar tayyorlandi! Qanday harakatni tanlaysiz?", reply_markup=inline_kb)
         await state.clear()
 
     except Exception as e:
         await wait_msg.edit_text("⚠️ Xatolik yuz berdi. /start ni bosing.", reply_markup=asosiy_menyu)
         await state.clear()
 
+@dp.callback_query(F.data.startswith("pdf_"))
+async def send_pdf(callback: types.CallbackQuery):
+    quiz_id = callback.data.split("_")[1]
+    if quiz_id not in QUIZZES:
+        await callback.answer("⚠️ Test bazada topilmadi.", show_alert=True)
+        return
+        
+    await callback.answer("🔄 PDF tayyorlanmoqda...", show_alert=False)
+    
+    quiz_data = QUIZZES[quiz_id]
+    savollar = quiz_data.get("savollar", []) if isinstance(quiz_data, dict) else quiz_data
+    
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("helvetica", size=12)
+    
+    pdf.cell(0, 10, text=f"TEST TUZAR BOT - Test ID: {quiz_id}", new_x="LMARGIN", new_y="NEXT", align='C')
+    pdf.cell(0, 10, text="", new_x="LMARGIN", new_y="NEXT")
+    
+    for i, s in enumerate(savollar, 1):
+        q_text = s['savol'].encode('latin-1', 'replace').decode('latin-1')
+        pdf.multi_cell(0, 10, text=f"{i}. {q_text}")
+        for v_idx, v in enumerate(s['variantlar']):
+            v_text = v.encode('latin-1', 'replace').decode('latin-1')
+            pdf.cell(0, 10, text=f"   {chr(65+v_idx)}) {v_text}", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 5, text="", new_x="LMARGIN", new_y="NEXT")
+        
+    file_name = f"test_{quiz_id}.pdf"
+    pdf.output(file_name)
+    
+    pdf_file = FSInputFile(file_name)
+    await bot.send_document(callback.message.chat.id, pdf_file, caption="📥 Testning PDF varianti.")
+    os.remove(file_name)
 async def main():
     keep_alive()
     print("🚀 Barcha tugmalar va Orqaga qaytish funksiyasi ishga tushdi!")
