@@ -22,7 +22,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 # 👑 ADMIN SOZLAMASI (O'zingizning ID raqamingizni yozing)
-ADMIN_ID = 5031441892 
+ADMIN_ID = 0 
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -325,7 +325,7 @@ async def mavzuni_qabul_qilish(message: types.Message, state: FSMContext):
     await delete_tracked_msgs(message.chat.id, state)
 
     wait_msg = await message.answer(f"🟢 AI '{message.text}' mavzusida ({data['daraja']}) {data['soni']} ta test tuzmoqda. Kuting...", reply_markup=ReplyKeyboardRemove())
-    prompt = f"'{message.text}' mavzusi bo'yicha {data['soni']} ta turli xil test savolini tuz. Savollar qiyinlik darajasi: {data['daraja']}. Javobni FAQAT JSON ro'yxat formatida ber.\nNamuna: [{{\"savol\": \"...\", \"variantlar\": [\"A\", \"B\", \"C\", \"D\"], \"togri_index\": 0}}]"
+    prompt = f"'{message.text}' mavzusi bo'yicha {data['soni']} ta test tuz. Qiyinlik: {data['daraja']}. FAQAT JSON ro'yxat ber. DIQQAT: Variantlar ichiga A, B, C, D harflarini umuman yozma!\nNamuna: [{{\"savol\": \"...\", \"variantlar\": [\"Javob1\", \"Javob2\", \"Javob3\", \"Javob4\"], \"togri_index\": 0}}]"
     await generate_and_save(message, prompt, wait_msg, state, data['vaqt'])
 
 @dp.message(QuizForm.malumot, F.document)
@@ -352,7 +352,7 @@ async def faylni_qabul_qilish(message: types.Message, state: FSMContext):
             return
 
         await wait_msg.edit_text(f"🟢 AI fayl asosida ({data['daraja']}) {data['soni']} ta test tuzmoqda. Kuting...")
-        prompt = f"Quyidagi matn asosida {data['soni']} ta turli xil test savolini tuz. Savollar qiyinlik darajasi: {data['daraja']}. Javobni FAQAT JSON ro'yxat formatida ber.\nNamuna: [{{\"savol\": \"...\", \"variantlar\": [\"A\", \"B\", \"C\", \"D\"], \"togri_index\": 0}}]\n\nMatn: {text[:8000]}"
+        prompt = f"Matn asosida {data['soni']} ta test tuz. Qiyinlik: {data['daraja']}. FAQAT JSON ro'yxat ber. DIQQAT: Variantlar ichiga A, B, C, D harflarini umuman yozma!\nNamuna: [{{\"savol\": \"...\", \"variantlar\": [\"Javob1\", \"Javob2\", \"Javob3\", \"Javob4\"], \"togri_index\": 0}}]\n\nMatn: {text[:8000]}"
         await generate_and_save(message, prompt, wait_msg, state, data['vaqt'])
     except Exception as e:
         await wait_msg.edit_text("❌ Faylni o'qishda xatolik.")
@@ -425,15 +425,15 @@ async def send_pdf(callback: types.CallbackQuery):
     pdf.add_page()
     pdf.set_font("helvetica", size=12)
     
-    pdf.cell(0, 10, text=f"TEST TUZAR BOT - Test ID: {quiz_id}", new_x="LMARGIN", new_y="NEXT", align='C')
+    pdf.multi_cell(0, 10, text=f"TEST TUZAR BOT - Test ID: {quiz_id}", align='C')
     pdf.cell(0, 10, text="", new_x="LMARGIN", new_y="NEXT")
     
     for i, s in enumerate(savollar, 1):
-        q_text = s['savol'].encode('latin-1', 'replace').decode('latin-1')
-        pdf.multi_cell(0, 10, text=f"{i}. {q_text}")
+        q_text = s['savol'].replace('\n', ' ').encode('latin-1', 'replace').decode('latin-1')
+        pdf.multi_cell(0, 8, text=f"{i}. {q_text}")
         for v_idx, v in enumerate(s['variantlar']):
-            v_text = str(v).encode('latin-1', 'replace').decode('latin-1')
-            pdf.cell(0, 10, text=f"   {chr(65+v_idx)}) {v_text}", new_x="LMARGIN", new_y="NEXT")
+            v_text = str(v).replace('\n', ' ').encode('latin-1', 'replace').decode('latin-1')
+            pdf.multi_cell(0, 8, text=f"   {chr(65+v_idx)}) {v_text}")
         pdf.cell(0, 5, text="", new_x="LMARGIN", new_y="NEXT")
         
     file_name = f"test_{quiz_id}.pdf"
