@@ -22,7 +22,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 # 👑 ADMIN SOZLAMASI (O'zingizning ID raqamingizni yozing)
-ADMIN_ID = 0 
+ADMIN_ID = 5031441892
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
