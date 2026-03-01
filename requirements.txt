@@ -3,3 +3,4 @@ google-generativeai
 PyPDF2
 python-docx
 Flask
+fpdf2
