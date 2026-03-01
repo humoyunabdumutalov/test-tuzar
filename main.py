@@ -1,5 +1,3 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-from fpdf import FPDF
 import asyncio
 import os
 import io
@@ -10,10 +8,11 @@ from contextlib import suppress
 import google.generativeai as genai
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandObject
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.exceptions import TelegramBadRequest
+from fpdf import FPDF
 import PyPDF2
 from docx import Document
 from keep_alive import keep_alive
@@ -23,7 +22,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 # 👑 ADMIN SOZLAMASI (O'zingizning ID raqamingizni yozing)
-ADMIN_ID = 0 
+ADMIN_ID = 5031441892 
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -96,7 +95,6 @@ vaqt_menyu = ReplyKeyboardMarkup(
     ], resize_keyboard=True
 )
 
-# Fayl yoki matn kutayotgandagi menyu
 bekor_menyu = ReplyKeyboardMarkup(keyboard=[bekor_tugma], resize_keyboard=True)
 
 admin_menyu = ReplyKeyboardMarkup(
@@ -186,7 +184,6 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
             SESSION_SCORES[user_id] = 0 
             jami_savollar = len(savollar)
 
-            # Profil statistikasini yangilash
             uid_str = str(user_id)
             USERS[uid_str]["tests_taken"] = USERS[uid_str].get("tests_taken", 0) + 1
             bazaga_yozish(USERS_FILE, USERS)
@@ -315,7 +312,7 @@ async def vaqtni_olish(message: types.Message, state: FSMContext):
     await state.set_state(QuizForm.malumot)
 
     javob = "Menga PDF/Word faylini yuboring." if data['usul'] == 'fayl' else f"Qaysi mavzuda {data['soni']} ta test tuzmoqchisiz? Mavzuni yozing:"
-    msg = await message.answer(f"✅ Qabul qilindi. {javob}", reply_markup=bekor_menyu) # YANGILANDI: Bekor qilish menyusi
+    msg = await message.answer(f"✅ Qabul qilindi. {javob}", reply_markup=bekor_menyu)
     await track_msg(state, msg.message_id)
 
 # --- MA'LUMOTLARNI QABUL QILISH VA TAYYORLASH ---
@@ -395,9 +392,6 @@ async def generate_and_save(message: types.Message, prompt: str, wait_msg: types
 
         bot_info = await bot.get_me()
         bot_username = bot_info.username
-
-       bot_info = await bot.get_me()
-        bot_username = bot_info.username
         
         test_link = f"https://t.me/{bot_username}?start={quiz_id}"
         share_link = f"https://t.me/share/url?url={test_link}&text=Yangi testni yechib ko'ring!"
@@ -438,7 +432,7 @@ async def send_pdf(callback: types.CallbackQuery):
         q_text = s['savol'].encode('latin-1', 'replace').decode('latin-1')
         pdf.multi_cell(0, 10, text=f"{i}. {q_text}")
         for v_idx, v in enumerate(s['variantlar']):
-            v_text = v.encode('latin-1', 'replace').decode('latin-1')
+            v_text = str(v).encode('latin-1', 'replace').decode('latin-1')
             pdf.cell(0, 10, text=f"   {chr(65+v_idx)}) {v_text}", new_x="LMARGIN", new_y="NEXT")
         pdf.cell(0, 5, text="", new_x="LMARGIN", new_y="NEXT")
         
@@ -448,9 +442,10 @@ async def send_pdf(callback: types.CallbackQuery):
     pdf_file = FSInputFile(file_name)
     await bot.send_document(callback.message.chat.id, pdf_file, caption="📥 Testning PDF varianti.")
     os.remove(file_name)
+
 async def main():
     keep_alive()
-    print("🚀 Barcha tugmalar va Orqaga qaytish funksiyasi ishga tushdi!")
+    print("🚀 Barcha tugmalar va PDF yuklash funksiyasi ishga tushdi!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
