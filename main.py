@@ -4,7 +4,7 @@ import io
 import json
 import uuid
 import random
-import sqlite3
+import psycopg2
 from contextlib import suppress
 import google.generativeai as genai
 from aiogram import Bot, Dispatcher, types, F
@@ -21,6 +21,7 @@ from keep_alive import keep_alive
 # --- SOZLAMALAR ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 ADMIN_ID = 5031441892  # O'zingizning ID raqamingizni yozing
 
 bot = Bot(token=BOT_TOKEN)
@@ -28,9 +29,12 @@ dp = Dispatcher()
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
-# --- MA'LUMOTLAR BAZASI (SQLite) ---
+# --- MA'LUMOTLAR BAZASI (PostgreSQL) ---
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL)
+
 def init_db():
-    conn = sqlite3.connect("bot_database.db")
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY, name TEXT, score INTEGER, tests_taken INTEGER)''')
     c.execute('''CREATE TABLE IF NOT EXISTS quizzes (quiz_id TEXT PRIMARY KEY, vaqt INTEGER, daraja TEXT, savollar TEXT)''')
@@ -40,9 +44,9 @@ def init_db():
 init_db()
 
 def add_user(user_id, name):
-    conn = sqlite3.connect("bot_database.db")
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO users (user_id, name, score, tests_taken) VALUES (?, ?, 0, 0)", (str(user_id), name))
+    c.execute("INSERT INTO users (user_id, name, score, tests_taken) VALUES (%s, %s, 0, 0) ON CONFLICT (user_id) DO NOTHING", (str(user_id), name))
     conn.commit()
     conn.close()
 
@@ -129,7 +133,7 @@ async def bekor_qilish_handler(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "🏆 Reyting")
 async def show_reyting(message: types.Message):
-    conn = sqlite3.connect("bot_database.db")
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT name, score FROM users ORDER BY score DESC LIMIT 10")
     users = c.fetchall()
@@ -142,9 +146,9 @@ async def show_reyting(message: types.Message):
 
 @dp.message(F.text == "👤 Profil")
 async def show_profile(message: types.Message):
-    conn = sqlite3.connect("bot_database.db")
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT name, score, tests_taken FROM users WHERE user_id = ?", (str(message.from_user.id),))
+    c.execute("SELECT name, score, tests_taken FROM users WHERE user_id = %s", (str(message.from_user.id),))
     u = c.fetchone()
     conn.close()
     
@@ -166,13 +170,13 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
 
     if command and command.args:
         quiz_id = command.args
-        conn = sqlite3.connect("bot_database.db")
+        conn = get_db_connection()
         c = conn.cursor()
-        c.execute("SELECT vaqt, daraja, savollar FROM quizzes WHERE quiz_id = ?", (quiz_id,))
+        c.execute("SELECT vaqt, daraja, savollar FROM quizzes WHERE quiz_id = %s", (quiz_id,))
         quiz_row = c.fetchone()
         
         if quiz_row:
-            c.execute("UPDATE users SET tests_taken = tests_taken + 1 WHERE user_id = ?", (str(message.from_user.id),))
+            c.execute("UPDATE users SET tests_taken = tests_taken + 1 WHERE user_id = %s", (str(message.from_user.id),))
             conn.commit()
             conn.close()
 
@@ -230,7 +234,7 @@ async def back_to_main(message: types.Message, state: FSMContext):
 @dp.message(F.text == "📊 Statistika")
 async def show_stats(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
-    conn = sqlite3.connect("bot_database.db")
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM users")
     users_count = c.fetchone()[0]
@@ -329,9 +333,9 @@ async def handle_poll_answer(poll_answer: types.PollAnswer):
             ball = POLL_DATA[poll_id]["points"]
             SESSION_SCORES[user_id_int] = SESSION_SCORES.get(user_id_int, 0) + 1
             
-            conn = sqlite3.connect("bot_database.db")
+            conn = get_db_connection()
             c = conn.cursor()
-            c.execute("UPDATE users SET score = score + ? WHERE user_id = ?", (ball, user_id_str))
+            c.execute("UPDATE users SET score = score + %s WHERE user_id = %s", (ball, user_id_str))
             conn.commit()
             conn.close()
 
@@ -350,9 +354,9 @@ async def generate_and_save(message: types.Message, prompt: str, wait_msg: types
 
         quiz_id = str(uuid.uuid4())[:8]
         
-        conn = sqlite3.connect("bot_database.db")
+        conn = get_db_connection()
         c = conn.cursor()
-        c.execute("INSERT INTO quizzes (quiz_id, vaqt, daraja, savollar) VALUES (?, ?, ?, ?)", (quiz_id, vaqt, daraja, json.dumps(savollar)))
+        c.execute("INSERT INTO quizzes (quiz_id, vaqt, daraja, savollar) VALUES (%s, %s, %s, %s)", (quiz_id, vaqt, daraja, json.dumps(savollar)))
         conn.commit()
         conn.close()
 
@@ -374,9 +378,9 @@ async def generate_and_save(message: types.Message, prompt: str, wait_msg: types
 @dp.callback_query(F.data.startswith("pdf_"))
 async def send_pdf(callback: types.CallbackQuery):
     quiz_id = callback.data.split("_")[1]
-    conn = sqlite3.connect("bot_database.db")
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT savollar FROM quizzes WHERE quiz_id = ?", (quiz_id,))
+    c.execute("SELECT savollar FROM quizzes WHERE quiz_id = %s", (quiz_id,))
     row = c.fetchone()
     conn.close()
 
@@ -408,7 +412,7 @@ async def send_pdf(callback: types.CallbackQuery):
 
 async def main():
     keep_alive()
-    print("🚀 SQLite bazasi bilan ishga tushdi!")
+    print("🚀 PostgreSQL bazasi bilan ishga tushdi!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
