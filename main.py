@@ -1,3 +1,4 @@
+
 import asyncio
 import os
 import io
@@ -292,8 +293,12 @@ async def mavzuni_qabul_qilish(message: types.Message, state: FSMContext):
     data = await state.get_data()
     if data.get('usul') != 'mavzu': return
     await delete_tracked_msgs(message.chat.id, state)
-    wait_msg = await message.answer(f"🟢 AI test tuzmoqda...", reply_markup=ReplyKeyboardRemove())
-    prompt = f"'{message.text}' bo'yicha {data['soni']} ta test tuz. Qiyinlik: {data['daraja']}. FAQAT JSON ro'yxat ber. Variantlarga A, B, C, D yozma!\nNamuna: [{{\"savol\": \"...\", \"variantlar\": [\"J1\", \"J2\", \"J3\", \"J4\"], \"togri_index\": 0}}]"
+    wait_msg = await message.answer("🟢 AI test tuzmoqda...", reply_markup=ReplyKeyboardRemove())
+    
+    daraja_toza = data['daraja'].split()[-1] 
+    qoshimcha = "Juda murakkab, chuqur tahliliy va mantiqiy qiyin savollar yozing." if daraja_toza == "Qiyin" else ""
+    
+    prompt = f"'{message.text}' bo'yicha {data['soni']} ta test tuz. Qiyinlik: {daraja_toza}. {qoshimcha} FAQAT JSON ro'yxat ber. Variantlarga A, B, C, D yozma!\nNamuna: [{{\"savol\": \"...\", \"variantlar\": [\"J1\", \"J2\", \"J3\", \"J4\"], \"togri_index\": 0}}]"
     await generate_and_save(message, prompt, wait_msg, state, data['vaqt'], data['daraja'])
 
 @dp.message(QuizForm.malumot, F.document)
@@ -314,7 +319,10 @@ async def faylni_qabul_qilish(message: types.Message, state: FSMContext):
         if filename.endswith('.pdf'): text = "".join([p.extract_text() or "" for p in PyPDF2.PdfReader(file_data).pages])
         elif filename.endswith('.docx'): text = "\n".join([p.text for p in Document(file_data).paragraphs])
 
-        prompt = f"Matn asosida {data['soni']} ta test tuz. Qiyinlik: {data['daraja']}. FAQAT JSON ro'yxat ber. Variantlarga A, B, C, D yozma!\nNamuna: [{{\"savol\": \"...\", \"variantlar\": [\"J1\", \"J2\", \"J3\", \"J4\"], \"togri_index\": 0}}]\n\nMatn: {text[:8000]}"
+        daraja_toza = data['daraja'].split()[-1] 
+        qoshimcha = "Juda murakkab, chuqur tahliliy va mantiqiy qiyin savollar yozing." if daraja_toza == "Qiyin" else ""
+
+        prompt = f"Matn asosida {data['soni']} ta test tuz. Qiyinlik: {daraja_toza}. {qoshimcha} FAQAT JSON ro'yxat ber. Variantlarga A, B, C, D yozma!\nNamuna: [{{\"savol\": \"...\", \"variantlar\": [\"J1\", \"J2\", \"J3\", \"J4\"], \"togri_index\": 0}}]\n\nMatn: {text[:8000]}"
         await wait_msg.edit_text("🟢 AI test tuzmoqda...")
         await generate_and_save(message, prompt, wait_msg, state, data['vaqt'], data['daraja'])
     except:
