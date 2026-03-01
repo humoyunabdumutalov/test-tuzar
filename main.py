@@ -21,7 +21,7 @@ from keep_alive import keep_alive
 # --- SOZLAMALAR ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-ADMIN_ID = 0  # O'zingizning ID raqamingizni yozing
+ADMIN_ID = 5031441892  # O'zingizning ID raqamingizni yozing
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
