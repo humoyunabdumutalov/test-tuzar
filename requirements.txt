@@ -1,0 +1,5 @@
+aiogram==3.4.1
+google-generativeai
+PyPDF2
+python-docx
+Flask
