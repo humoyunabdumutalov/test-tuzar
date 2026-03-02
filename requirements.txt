@@ -4,4 +4,4 @@ PyPDF2
 python-docx
 Flask
 fpdf2
-psycopg2-binary
+asyncpg
