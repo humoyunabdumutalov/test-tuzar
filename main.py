@@ -16,7 +16,6 @@ from aiogram.exceptions import TelegramBadRequest
 from fpdf import FPDF
 import PyPDF2
 from docx import Document
-from keep_alive import keep_alive
 
 # --- SOZLAMALAR ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -433,7 +432,6 @@ async def send_pdf(callback: types.CallbackQuery):
         # Agar xatolik bersa, bot indamay qolmasdan foydalanuvchiga muammoni aytadi
         await bot.send_message(callback.message.chat.id, f"⚠️ PDF yaratishda xatolik yuz berdi: {str(e)[:100]}")
 async def main():
-    keep_alive()
     print("🚀 PostgreSQL bazasi bilan ishga tushdi!")
     await dp.start_polling(bot)
 
