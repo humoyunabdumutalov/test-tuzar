@@ -1,13 +1,13 @@
+
 import asyncio
 import os
 import io
 import json
 import uuid
 import random
-import psycopg2
+import asyncpg
 from contextlib import suppress
 import google.generativeai as genai
-from keep_alive import keep_alive
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandObject
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
@@ -17,38 +17,34 @@ from aiogram.exceptions import TelegramBadRequest
 from fpdf import FPDF
 import PyPDF2
 from docx import Document
+from keep_alive import keep_alive
 
 # --- SOZLAMALAR ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-ADMIN_ID = 5031441892  # O'zingizning ID raqamingizni yozing
+ADMIN_ID = 0  # O'zingizning ID raqamingizni yozing
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
-# --- MA'LUMOTLAR BAZASI (PostgreSQL) ---
-def get_db_connection():
-    return psycopg2.connect(DATABASE_URL)
+# --- ASINXRON MA'LUMOTLAR BAZASI (asyncpg + Connection Pool) ---
+db_pool = None
 
-def init_db():
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY, name TEXT, score INTEGER, tests_taken INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS quizzes (quiz_id TEXT PRIMARY KEY, vaqt INTEGER, daraja TEXT, savollar TEXT)''')
-    conn.commit()
-    conn.close()
+async def init_db_pool():
+    global db_pool
+    # Bazaga 10-20 ta doimiy ulanish (kabel) tayyorlab qo'yamiz
+    db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=5, max_size=20)
+    
+    async with db_pool.acquire() as conn:
+        await conn.execute('''CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY, name TEXT, score INTEGER, tests_taken INTEGER)''')
+        await conn.execute('''CREATE TABLE IF NOT EXISTS quizzes (quiz_id TEXT PRIMARY KEY, vaqt INTEGER, daraja TEXT, savollar TEXT)''')
 
-init_db()
-
-def add_user(user_id, name):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("INSERT INTO users (user_id, name, score, tests_taken) VALUES (%s, %s, 0, 0) ON CONFLICT (user_id) DO NOTHING", (str(user_id), name))
-    conn.commit()
-    conn.close()
+async def add_user(user_id, name):
+    async with db_pool.acquire() as conn:
+        await conn.execute("INSERT INTO users (user_id, name, score, tests_taken) VALUES ($1, $2, 0, 0) ON CONFLICT (user_id) DO NOTHING", str(user_id), name)
 
 POLL_DATA = {}   
 SESSION_SCORES = {} 
@@ -133,27 +129,21 @@ async def bekor_qilish_handler(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "🏆 Reyting")
 async def show_reyting(message: types.Message):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT name, score FROM users ORDER BY score DESC LIMIT 10")
-    users = c.fetchall()
-    conn.close()
+    async with db_pool.acquire() as conn:
+        users = await conn.fetch("SELECT name, score FROM users ORDER BY score DESC LIMIT 10")
     
     text = "🏆 **TOP-10 REYTING:**\n\n"
-    for i, (name, score) in enumerate(users, 1):
-        text += f"{i}. {name} — {score} ball\n"
+    for i, u in enumerate(users, 1):
+        text += f"{i}. {u['name']} — {u['score']} ball\n"
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "👤 Profil")
 async def show_profile(message: types.Message):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT name, score, tests_taken FROM users WHERE user_id = %s", (str(message.from_user.id),))
-    u = c.fetchone()
-    conn.close()
+    async with db_pool.acquire() as conn:
+        u = await conn.fetchrow("SELECT name, score, tests_taken FROM users WHERE user_id = $1", str(message.from_user.id))
     
     if u:
-        text = f"👤 **Profil:**\n\nIsm: {u[0]}\n✅ Jami ball: {u[1]}\n📝 Yechilgan testlar: {u[2]} marta"
+        text = f"👤 **Profil:**\n\nIsm: {u['name']}\n✅ Jami ball: {u['score']}\n📝 Yechilgan testlar: {u['tests_taken']} marta"
     else:
         text = "Siz hali test yechmadingiz."
     await message.answer(text, parse_mode="Markdown")
@@ -166,57 +156,54 @@ async def show_help(message: types.Message):
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext, command: CommandObject = None):
     await state.clear()
-    add_user(message.from_user.id, message.from_user.first_name)
+    await add_user(message.from_user.id, message.from_user.first_name)
 
     if command and command.args:
         quiz_id = command.args
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT vaqt, daraja, savollar FROM quizzes WHERE quiz_id = %s", (quiz_id,))
-        quiz_row = c.fetchone()
         
-        if quiz_row:
-            c.execute("UPDATE users SET tests_taken = tests_taken + 1 WHERE user_id = %s", (str(message.from_user.id),))
-            conn.commit()
-            conn.close()
-
-            await message.answer("🚀 Test boshlanmoqda...", reply_markup=ReplyKeyboardRemove())
-            vaqt_cheklovi, daraja, savollar_json = quiz_row[0], quiz_row[1], quiz_row[2]
-            savollar = json.loads(savollar_json)
+        async with db_pool.acquire() as conn:
+            quiz_row = await conn.fetchrow("SELECT vaqt, daraja, savollar FROM quizzes WHERE quiz_id = $1", quiz_id)
             
-            user_id = message.from_user.id
-            SESSION_SCORES[user_id] = 0 
-            jami_savollar = len(savollar)
-            
-            ball_qiymati = 3 if "🔴 Qiyin" in daraja else (2 if "🟡 O'rtacha" in daraja else 1)
+            if quiz_row:
+                await conn.execute("UPDATE users SET tests_taken = tests_taken + 1 WHERE user_id = $1", str(message.from_user.id))
+                
+                await message.answer("🚀 Test boshlanmoqda...", reply_markup=ReplyKeyboardRemove())
+                vaqt_cheklovi, daraja, savollar_json = quiz_row['vaqt'], quiz_row['daraja'], quiz_row['savollar']
+                savollar = json.loads(savollar_json)
+                
+                user_id = message.from_user.id
+                SESSION_SCORES[user_id] = 0 
+                jami_savollar = len(savollar)
+                
+                ball_qiymati = 3 if "🔴 Qiyin" in daraja else (2 if "🟡 O'rtacha" in daraja else 1)
 
-            for data in savollar:
-                q = data['savol'][:250]
-                opts = [str(opt)[:100] for opt in data['variantlar']][:4]
-                correct = int(data.get('togri_index', 0))
+                for data in savollar:
+                    q = data['savol'][:250]
+                    opts = [str(opt)[:100] for opt in data['variantlar']][:4]
+                    correct = int(data.get('togri_index', 0))
 
-                quiz_kwargs = {
-                    "chat_id": message.chat.id, "question": q, "options": opts,
-                    "type": 'quiz', "correct_option_id": correct, "is_anonymous": False 
-                }
-                if vaqt_cheklovi > 0: quiz_kwargs["open_period"] = vaqt_cheklovi
+                    quiz_kwargs = {
+                        "chat_id": message.chat.id, "question": q, "options": opts,
+                        "type": 'quiz', "correct_option_id": correct, "is_anonymous": False 
+                    }
+                    if vaqt_cheklovi > 0: quiz_kwargs["open_period"] = vaqt_cheklovi
 
-                sent_poll = await bot.send_poll(**quiz_kwargs)
-                POLL_DATA[sent_poll.poll.id] = {"correct": correct, "points": ball_qiymati}
+                    sent_poll = await bot.send_poll(**quiz_kwargs)
+                    POLL_DATA[sent_poll.poll.id] = {"correct": correct, "points": ball_qiymati}
 
-                await asyncio.sleep(vaqt_cheklovi + 1 if vaqt_cheklovi > 0 else 2.0)
+                    await asyncio.sleep(vaqt_cheklovi + 1 if vaqt_cheklovi > 0 else 2.0)
 
-            if vaqt_cheklovi == 0:
-                await message.answer("🏁 **Barcha testlar yuborildi!**\nJavoblarni xotirjam yeching. Ballar avtomatik hisoblanadi.", reply_markup=asosiy_menyu, parse_mode="Markdown")
+                if vaqt_cheklovi == 0:
+                    await message.answer("🏁 **Barcha testlar yuborildi!**\nJavoblarni xotirjam yeching. Ballar avtomatik hisoblanadi.", reply_markup=asosiy_menyu, parse_mode="Markdown")
+                    return
+
+                togri_javoblar = SESSION_SCORES.get(user_id, 0)
+                foiz = int((togri_javoblar / jami_savollar) * 100) if jami_savollar > 0 else 0
+                await message.answer(f"🏁 **Yakunlandi!**\nNatija: {togri_javoblar} ta to'g'ri ({foiz}%)", reply_markup=asosiy_menyu, parse_mode="Markdown")
                 return
-
-            togri_javoblar = SESSION_SCORES.get(user_id, 0)
-            foiz = int((togri_javoblar / jami_savollar) * 100) if jami_savollar > 0 else 0
-            await message.answer(f"🏁 **Yakunlandi!**\nNatija: {togri_javoblar} ta to'g'ri ({foiz}%)", reply_markup=asosiy_menyu, parse_mode="Markdown")
-            return
-        else:
-            conn.close()
-            await message.answer("⚠️ Test topilmadi.")
+            else:
+                await message.answer("⚠️ Test topilmadi.")
+                return
 
     await message.answer("Salom! Usulni tanlang:", reply_markup=asosiy_menyu)
 
@@ -234,13 +221,10 @@ async def back_to_main(message: types.Message, state: FSMContext):
 @dp.message(F.text == "📊 Statistika")
 async def show_stats(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM users")
-    users_count = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM quizzes")
-    quizzes_count = c.fetchone()[0]
-    conn.close()
+    async with db_pool.acquire() as conn:
+        users_count = await conn.fetchval("SELECT COUNT(*) FROM users")
+        quizzes_count = await conn.fetchval("SELECT COUNT(*) FROM quizzes")
+        
     await message.answer(f"📊 **Statistika:**\n👥 Qatnashchilar: {users_count}\n📝 Testlar: {quizzes_count}", parse_mode="Markdown")
 
 # --- MANTIQ QADAMLARI ---
@@ -340,11 +324,8 @@ async def handle_poll_answer(poll_answer: types.PollAnswer):
             ball = POLL_DATA[poll_id]["points"]
             SESSION_SCORES[user_id_int] = SESSION_SCORES.get(user_id_int, 0) + 1
             
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("UPDATE users SET score = score + %s WHERE user_id = %s", (ball, user_id_str))
-            conn.commit()
-            conn.close()
+            async with db_pool.acquire() as conn:
+                await conn.execute("UPDATE users SET score = score + $1 WHERE user_id = $2", ball, user_id_str)
 
 async def generate_and_save(message: types.Message, prompt: str, wait_msg: types.Message, state: FSMContext, vaqt: int, daraja: str):
     try:
@@ -361,11 +342,8 @@ async def generate_and_save(message: types.Message, prompt: str, wait_msg: types
 
         quiz_id = str(uuid.uuid4())[:8]
         
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("INSERT INTO quizzes (quiz_id, vaqt, daraja, savollar) VALUES (%s, %s, %s, %s)", (quiz_id, vaqt, daraja, json.dumps(savollar)))
-        conn.commit()
-        conn.close()
+        async with db_pool.acquire() as conn:
+            await conn.execute("INSERT INTO quizzes (quiz_id, vaqt, daraja, savollar) VALUES ($1, $2, $3, $4)", quiz_id, vaqt, daraja, json.dumps(savollar))
 
         bot_info = await bot.get_me()
         test_link = f"https://t.me/{bot_info.username}?start={quiz_id}"
@@ -386,11 +364,9 @@ async def generate_and_save(message: types.Message, prompt: str, wait_msg: types
 async def send_pdf(callback: types.CallbackQuery):
     try:
         quiz_id = callback.data.split("_")[1]
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT savollar FROM quizzes WHERE quiz_id = %s", (quiz_id,))
-        row = c.fetchone()
-        conn.close()
+        
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT savollar FROM quizzes WHERE quiz_id = $1", quiz_id)
 
         if not row:
             await callback.answer("⚠️ Topilmadi.", show_alert=True)
@@ -399,7 +375,7 @@ async def send_pdf(callback: types.CallbackQuery):
         await callback.answer("🔄 PDF tayyorlanmoqda...", show_alert=False)
         wait_msg = await bot.send_message(callback.message.chat.id, "🔄 Hujjat shakllantirilmoqda. Iltimos, bir oz kuting...")
         
-        savollar = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+        savollar = json.loads(row['savollar']) if isinstance(row['savollar'], str) else row['savollar']
         
         pdf = FPDF()
         pdf.add_page()
@@ -408,7 +384,6 @@ async def send_pdf(callback: types.CallbackQuery):
         pdf.cell(0, 10, text="", new_x="LMARGIN", new_y="NEXT")
         
         for i, s in enumerate(savollar, 1):
-            # Matnlarni PDF o'qiy oladigan xavfsiz formatga o'tkazish
             q_text = str(s.get('savol', '')).replace('\n', ' ').encode('windows-1252', 'replace').decode('windows-1252')
             pdf.multi_cell(0, 8, text=f"{i}. {q_text}")
             
@@ -417,24 +392,23 @@ async def send_pdf(callback: types.CallbackQuery):
                 pdf.multi_cell(0, 8, text=f"   {chr(65+v_idx)}) {v_text}")
             pdf.cell(0, 5, text="", new_x="LMARGIN", new_y="NEXT")
             
-        # Faylni xavfsiz vaqtinchalik xotira (/tmp/) ga saqlash
         file_name = f"/tmp/test_{quiz_id}.pdf"
         pdf.output(file_name)
         
         pdf_file = FSInputFile(file_name)
         await bot.send_document(callback.message.chat.id, pdf_file, caption="📥 Marhamat, testning PDF varianti.")
         
-        # Tozalash
         os.remove(file_name)
         await wait_msg.delete()
 
     except Exception as e:
         print(f"PDF xatolik: {e}")
-        # Agar xatolik bersa, bot indamay qolmasdan foydalanuvchiga muammoni aytadi
         await bot.send_message(callback.message.chat.id, f"⚠️ PDF yaratishda xatolik yuz berdi: {str(e)[:100]}")
+
 async def main():
-    keep_alive()
-    print("🚀 PostgreSQL bazasi bilan ishga tushdi!")
+    keep_alive()  # Server portini ushlab turish uchun
+    await init_db_pool() # Baza ulanishlar hovuzini ishga tushirish
+    print("🚀 ASYNCPG (Super-tez) baza bilan ishga tushdi!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
