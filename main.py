@@ -35,11 +35,16 @@ db_pool = None
 
 async def init_db_pool():
     global db_pool
-    db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=5, max_size=20)
+    # Supabase'ning Transaction Pooler'i uchun statement_cache_size=0 bo'lishi shart!
+    db_pool = await asyncpg.create_pool(
+        DATABASE_URL, 
+        min_size=5, 
+        max_size=20,
+        statement_cache_size=0  # <- MANA SHU QO'SHILDI
+    )
     async with db_pool.acquire() as conn:
         await conn.execute('''CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY, name TEXT, score INTEGER, tests_taken INTEGER)''')
         await conn.execute('''CREATE TABLE IF NOT EXISTS quizzes (quiz_id TEXT PRIMARY KEY, vaqt INTEGER, daraja TEXT, savollar TEXT)''')
-
 async def add_user(user_id, name):
     async with db_pool.acquire() as conn:
         await conn.execute("INSERT INTO users (user_id, name, score, tests_taken) VALUES ($1, $2, 0, 0) ON CONFLICT (user_id) DO NOTHING", str(user_id), name)
@@ -388,6 +393,7 @@ async def generate_and_save(message: types.Message, prompt: str, wait_msg: types
         test_link = f"https://t.me/{bot_info.username}?start={quiz_id}"
         share_link = f"https://t.me/share/url?url={test_link}&text=Yangi test!"
         
+        # ... tepadagi test link yasaydigan qismi qolaveradi ...
         inline_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Yechish", url=test_link), InlineKeyboardButton(text="🔗 Ulashish", url=share_link)],
             [InlineKeyboardButton(text="📥 PDF yuklash", callback_data=f"pdf_{quiz_id}")]
@@ -397,7 +403,9 @@ async def generate_and_save(message: types.Message, prompt: str, wait_msg: types
         await state.clear()
     except Exception as e:
         print(f"Gen xatosi: {e}")
-        await wait_msg.edit_text("⚠️ Xatolik.", reply_markup=asosiy_menyu)
+        # xabarni edit qilish o'rniga oddiy qilib xabar jo'natamiz va bekor menyusiga qaytaramiz
+        await wait_msg.delete() 
+        await message.answer("⚠️ Test tuzishda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.", reply_markup=asosiy_menyu)
         await state.clear()
 
 @dp.callback_query(F.data.startswith("pdf_"))
