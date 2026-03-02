@@ -295,7 +295,7 @@ async def mavzuni_qabul_qilish(message: types.Message, state: FSMContext):
     wait_msg = await message.answer("🟢 AI test tuzmoqda...", reply_markup=ReplyKeyboardRemove())
     
     daraja_toza = data['daraja'].split()[-1] 
-    qoshimcha = "Juda murakkab, chuqur tahliliy va mantiqiy qiyin savollar yozing." if daraja_toza == "Qiyin" else ""
+    qoshimcha = "Mantiqiy o'ylashni talab qiladigan murakkab savollar tuzing. DIQQAT: Telegram qoidasiga ko'ra har bir javob varianti uzunligi 90 ta belgidan oshmasligi QAT'IY SHART. Javoblar qisqa, aniq va londa bo'lsin!" if daraja_toza == "Qiyin" else "DIQQAT: Telegram qoidasiga ko'ra har bir javob varianti uzunligi 90 ta belgidan oshmasligi qat'iy shart!"
     
     prompt = f"'{message.text}' bo'yicha {data['soni']} ta test tuz. Qiyinlik: {daraja_toza}. {qoshimcha} FAQAT JSON ro'yxat ber. Variantlarga A, B, C, D yozma!\nNamuna: [{{\"savol\": \"...\", \"variantlar\": [\"J1\", \"J2\", \"J3\", \"J4\"], \"togri_index\": 0}}]"
     await generate_and_save(message, prompt, wait_msg, state, data['vaqt'], data['daraja'])
@@ -319,7 +319,7 @@ async def faylni_qabul_qilish(message: types.Message, state: FSMContext):
         elif filename.endswith('.docx'): text = "\n".join([p.text for p in Document(file_data).paragraphs])
 
         daraja_toza = data['daraja'].split()[-1] 
-        qoshimcha = "Juda murakkab, chuqur tahliliy va mantiqiy qiyin savollar yozing." if daraja_toza == "Qiyin" else ""
+        qoshimcha = "Matn asosida chuqur mantiqiy o'ylashni talab qiladigan murakkab savollar tuzing. DIQQAT: Telegram qoidasiga ko'ra har bir javob varianti uzunligi 90 ta belgidan oshmasligi QAT'IY SHART. Javoblar qisqa va londa bo'lsin!" if daraja_toza == "Qiyin" else "DIQQAT: Telegram qoidasiga ko'ra har bir javob varianti uzunligi 90 ta belgidan oshmasligi qat'iy shart!"
 
         prompt = f"Matn asosida {data['soni']} ta test tuz. Qiyinlik: {daraja_toza}. {qoshimcha} FAQAT JSON ro'yxat ber. Variantlarga A, B, C, D yozma!\nNamuna: [{{\"savol\": \"...\", \"variantlar\": [\"J1\", \"J2\", \"J3\", \"J4\"], \"togri_index\": 0}}]\n\nMatn: {text[:8000]}"
         await wait_msg.edit_text("🟢 AI test tuzmoqda...")
