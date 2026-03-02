@@ -384,39 +384,54 @@ async def generate_and_save(message: types.Message, prompt: str, wait_msg: types
 
 @dp.callback_query(F.data.startswith("pdf_"))
 async def send_pdf(callback: types.CallbackQuery):
-    quiz_id = callback.data.split("_")[1]
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT savollar FROM quizzes WHERE quiz_id = %s", (quiz_id,))
-    row = c.fetchone()
-    conn.close()
+    try:
+        quiz_id = callback.data.split("_")[1]
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT savollar FROM quizzes WHERE quiz_id = %s", (quiz_id,))
+        row = c.fetchone()
+        conn.close()
 
-    if not row:
-        await callback.answer("⚠️ Topilmadi.", show_alert=True)
-        return
+        if not row:
+            await callback.answer("⚠️ Topilmadi.", show_alert=True)
+            return
+            
+        await callback.answer("🔄 PDF tayyorlanmoqda...", show_alert=False)
+        wait_msg = await bot.send_message(callback.message.chat.id, "🔄 Hujjat shakllantirilmoqda. Iltimos, bir oz kuting...")
         
-    await callback.answer("🔄 PDF tayyorlanmoqda...", show_alert=False)
-    savollar = json.loads(row[0])
-    
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("helvetica", size=12)
-    pdf.multi_cell(0, 10, text=f"TEST ID: {quiz_id}", align='C')
-    pdf.cell(0, 10, text="", new_x="LMARGIN", new_y="NEXT")
-    
-    for i, s in enumerate(savollar, 1):
-        q_text = s['savol'].replace('\n', ' ').encode('latin-1', 'replace').decode('latin-1')
-        pdf.multi_cell(0, 8, text=f"{i}. {q_text}")
-        for v_idx, v in enumerate(s['variantlar']):
-            v_text = str(v).replace('\n', ' ').encode('latin-1', 'replace').decode('latin-1')
-            pdf.multi_cell(0, 8, text=f"   {chr(65+v_idx)}) {v_text}")
-        pdf.cell(0, 5, text="", new_x="LMARGIN", new_y="NEXT")
+        savollar = json.loads(row[0]) if isinstance(row[0], str) else row[0]
         
-    file_name = f"test_{quiz_id}.pdf"
-    pdf.output(file_name)
-    await bot.send_document(callback.message.chat.id, FSInputFile(file_name), caption="📥 PDF tayyor.")
-    os.remove(file_name)
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("helvetica", size=12)
+        pdf.multi_cell(0, 10, text=f"TEST ID: {quiz_id}", align='C')
+        pdf.cell(0, 10, text="", new_x="LMARGIN", new_y="NEXT")
+        
+        for i, s in enumerate(savollar, 1):
+            # Matnlarni PDF o'qiy oladigan xavfsiz formatga o'tkazish
+            q_text = str(s.get('savol', '')).replace('\n', ' ').encode('windows-1252', 'replace').decode('windows-1252')
+            pdf.multi_cell(0, 8, text=f"{i}. {q_text}")
+            
+            for v_idx, v in enumerate(s.get('variantlar', [])):
+                v_text = str(v).replace('\n', ' ').encode('windows-1252', 'replace').decode('windows-1252')
+                pdf.multi_cell(0, 8, text=f"   {chr(65+v_idx)}) {v_text}")
+            pdf.cell(0, 5, text="", new_x="LMARGIN", new_y="NEXT")
+            
+        # Faylni xavfsiz vaqtinchalik xotira (/tmp/) ga saqlash
+        file_name = f"/tmp/test_{quiz_id}.pdf"
+        pdf.output(file_name)
+        
+        pdf_file = FSInputFile(file_name)
+        await bot.send_document(callback.message.chat.id, pdf_file, caption="📥 Marhamat, testning PDF varianti.")
+        
+        # Tozalash
+        os.remove(file_name)
+        await wait_msg.delete()
 
+    except Exception as e:
+        print(f"PDF xatolik: {e}")
+        # Agar xatolik bersa, bot indamay qolmasdan foydalanuvchiga muammoni aytadi
+        await bot.send_message(callback.message.chat.id, f"⚠️ PDF yaratishda xatolik yuz berdi: {str(e)[:100]}")
 async def main():
     keep_alive()
     print("🚀 PostgreSQL bazasi bilan ishga tushdi!")
