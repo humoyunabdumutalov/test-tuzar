@@ -7,6 +7,7 @@ import random
 import psycopg2
 from contextlib import suppress
 import google.generativeai as genai
+from keep_alive import keep_alive
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandObject
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
@@ -432,6 +433,7 @@ async def send_pdf(callback: types.CallbackQuery):
         # Agar xatolik bersa, bot indamay qolmasdan foydalanuvchiga muammoni aytadi
         await bot.send_message(callback.message.chat.id, f"⚠️ PDF yaratishda xatolik yuz berdi: {str(e)[:100]}")
 async def main():
+    keep_alive()
     print("🚀 PostgreSQL bazasi bilan ishga tushdi!")
     await dp.start_polling(bot)
 
