@@ -1,4 +1,3 @@
-
 import asyncio
 import os
 import io
@@ -35,16 +34,17 @@ db_pool = None
 
 async def init_db_pool():
     global db_pool
-    # Supabase'ning Transaction Pooler'i uchun statement_cache_size=0 bo'lishi shart!
+    # Supabase Transaction Pooler uchun statement_cache_size=0 qat'iy shart!
     db_pool = await asyncpg.create_pool(
         DATABASE_URL, 
         min_size=5, 
         max_size=20,
-        statement_cache_size=0  # <- MANA SHU QO'SHILDI
+        statement_cache_size=0
     )
     async with db_pool.acquire() as conn:
         await conn.execute('''CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY, name TEXT, score INTEGER, tests_taken INTEGER)''')
         await conn.execute('''CREATE TABLE IF NOT EXISTS quizzes (quiz_id TEXT PRIMARY KEY, vaqt INTEGER, daraja TEXT, savollar TEXT)''')
+
 async def add_user(user_id, name):
     async with db_pool.acquire() as conn:
         await conn.execute("INSERT INTO users (user_id, name, score, tests_taken) VALUES ($1, $2, 0, 0) ON CONFLICT (user_id) DO NOTHING", str(user_id), name)
@@ -54,7 +54,6 @@ SESSION_SCORES = {}
 
 # --- ORQA FONDAGI OG'IR VAZIFALAR (THREADS) UCHUN FUNKSIYALAR ---
 def read_file_sync(file_data, filename):
-    """Fayllarni sinxron o'qiydigan yordamchi funksiya"""
     text = ""
     try:
         if filename.endswith('.pdf'):
@@ -66,7 +65,6 @@ def read_file_sync(file_data, filename):
     return text
 
 def create_pdf_sync(quiz_id, savollar, file_name):
-    """PDF shakllantiradigan og'ir yordamchi funksiya"""
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("helvetica", size=12)
@@ -334,22 +332,28 @@ async def faylni_qabul_qilish(message: types.Message, state: FSMContext):
         file_data.seek(0)
         filename = message.document.file_name.lower()
         
-        # O'ZGARISH: Og'ir jarayonni orqa fonga (Thread) jo'natdik
         text = await asyncio.to_thread(read_file_sync, file_data, filename)
 
         if not text.strip():
-            await wait_msg.edit_text("⚠️ Fayl ichidan matn topilmadi. Boshqa fayl yuboring.")
+            await wait_msg.delete()
+            await message.answer("⚠️ Fayl ichidan matn topilmadi. Boshqa fayl yuboring.", reply_markup=asosiy_menyu)
+            await state.clear()
             return
 
         daraja_toza = data['daraja'].split()[-1] 
         qoshimcha = "Matn asosida chuqur mantiqiy o'ylashni talab qiladigan murakkab savollar tuzing. DIQQAT: Telegram qoidasiga ko'ra har bir javob varianti uzunligi 90 ta belgidan oshmasligi QAT'IY SHART. Javoblar qisqa va londa bo'lsin!" if daraja_toza == "Qiyin" else "DIQQAT: Telegram qoidasiga ko'ra har bir javob varianti uzunligi 90 ta belgidan oshmasligi qat'iy shart!"
 
         prompt = f"Matn asosida {data['soni']} ta test tuz. Qiyinlik: {daraja_toza}. {qoshimcha} FAQAT JSON ro'yxat ber. Variantlarga A, B, C, D yozma!\nNamuna: [{{\"savol\": \"...\", \"variantlar\": [\"J1\", \"J2\", \"J3\", \"J4\"], \"togri_index\": 0}}]\n\nMatn: {text[:8000]}"
-        await wait_msg.edit_text("🟢 AI test tuzmoqda...")
-        await generate_and_save(message, prompt, wait_msg, state, data['vaqt'], data['daraja'])
+        
+        # Tugmasiz xabarni yangilash xavfsizroq
+        await wait_msg.delete()
+        wait_msg_new = await message.answer("🟢 AI test tuzmoqda...", reply_markup=ReplyKeyboardRemove())
+        
+        await generate_and_save(message, prompt, wait_msg_new, state, data['vaqt'], data['daraja'])
     except Exception as e:
         print(f"Fayl xatosi: {e}")
-        await wait_msg.edit_text("❌ Xatolik yuz berdi.")
+        await wait_msg.delete()
+        await message.answer("❌ Xatolik yuz berdi.", reply_markup=asosiy_menyu)
         await state.clear()
 
 @dp.poll_answer()
@@ -393,7 +397,6 @@ async def generate_and_save(message: types.Message, prompt: str, wait_msg: types
         test_link = f"https://t.me/{bot_info.username}?start={quiz_id}"
         share_link = f"https://t.me/share/url?url={test_link}&text=Yangi test!"
         
-        # ... tepadagi test link yasaydigan qismi qolaveradi ...
         inline_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Yechish", url=test_link), InlineKeyboardButton(text="🔗 Ulashish", url=share_link)],
             [InlineKeyboardButton(text="📥 PDF yuklash", callback_data=f"pdf_{quiz_id}")]
@@ -403,8 +406,8 @@ async def generate_and_save(message: types.Message, prompt: str, wait_msg: types
         await state.clear()
     except Exception as e:
         print(f"Gen xatosi: {e}")
-        # xabarni edit qilish o'rniga oddiy qilib xabar jo'natamiz va bekor menyusiga qaytaramiz
-        await wait_msg.delete() 
+        # Xatolikda asabni buzuvchi ValidationError oldini oldik
+        await wait_msg.delete()
         await message.answer("⚠️ Test tuzishda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.", reply_markup=asosiy_menyu)
         await state.clear()
 
@@ -426,7 +429,6 @@ async def send_pdf(callback: types.CallbackQuery):
         savollar = json.loads(row['savollar']) if isinstance(row['savollar'], str) else row['savollar']
         file_name = f"/tmp/test_{quiz_id}.pdf"
         
-        # O'ZGARISH: PDF yasash jarayonini orqa fonga (Thread) jo'natdik
         await asyncio.to_thread(create_pdf_sync, quiz_id, savollar, file_name)
         
         pdf_file = FSInputFile(file_name)
@@ -440,9 +442,9 @@ async def send_pdf(callback: types.CallbackQuery):
         await bot.send_message(callback.message.chat.id, f"⚠️ PDF yaratishda xatolik yuz berdi: {str(e)[:100]}")
 
 async def main():
-    keep_alive()
-    await init_db_pool()
-    print("🚀 QOTMAS BOT: Multi-threading yoqildi!")
+    keep_alive()  # Web-server qulamasligi uchun portni ochiq tutadi
+    await init_db_pool() # Supabase xatosini hal qildik
+    print("🚀 QOTMAS BOT: Multi-threading, xatoliklar tuzatilgan va asyncpg yoqildi!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
