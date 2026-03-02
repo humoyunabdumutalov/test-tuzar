@@ -23,7 +23,7 @@ from keep_alive import keep_alive
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-ADMIN_ID = 0  # O'zingizning ID raqamingizni yozing
+ADMIN_ID = 5031441892  # O'zingizning ID raqamingizni yozing
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -35,9 +35,7 @@ db_pool = None
 
 async def init_db_pool():
     global db_pool
-    # Bazaga 10-20 ta doimiy ulanish (kabel) tayyorlab qo'yamiz
     db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=5, max_size=20)
-    
     async with db_pool.acquire() as conn:
         await conn.execute('''CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY, name TEXT, score INTEGER, tests_taken INTEGER)''')
         await conn.execute('''CREATE TABLE IF NOT EXISTS quizzes (quiz_id TEXT PRIMARY KEY, vaqt INTEGER, daraja TEXT, savollar TEXT)''')
@@ -48,6 +46,39 @@ async def add_user(user_id, name):
 
 POLL_DATA = {}   
 SESSION_SCORES = {} 
+
+# --- ORQA FONDAGI OG'IR VAZIFALAR (THREADS) UCHUN FUNKSIYALAR ---
+def read_file_sync(file_data, filename):
+    """Fayllarni sinxron o'qiydigan yordamchi funksiya"""
+    text = ""
+    try:
+        if filename.endswith('.pdf'):
+            text = "".join([p.extract_text() or "" for p in PyPDF2.PdfReader(file_data).pages])
+        elif filename.endswith('.docx'):
+            text = "\n".join([p.text for p in Document(file_data).paragraphs])
+    except Exception as e:
+        print(f"Faylni o'qishda xatolik: {e}")
+    return text
+
+def create_pdf_sync(quiz_id, savollar, file_name):
+    """PDF shakllantiradigan og'ir yordamchi funksiya"""
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("helvetica", size=12)
+    pdf.multi_cell(0, 10, text=f"TEST ID: {quiz_id}", align='C')
+    pdf.cell(0, 10, text="", new_x="LMARGIN", new_y="NEXT")
+    
+    for i, s in enumerate(savollar, 1):
+        q_text = str(s.get('savol', '')).replace('\n', ' ').encode('windows-1252', 'replace').decode('windows-1252')
+        pdf.multi_cell(0, 8, text=f"{i}. {q_text}")
+        
+        for v_idx, v in enumerate(s.get('variantlar', [])):
+            v_text = str(v).replace('\n', ' ').encode('windows-1252', 'replace').decode('windows-1252')
+            pdf.multi_cell(0, 8, text=f"   {chr(65+v_idx)}) {v_text}")
+        pdf.cell(0, 5, text="", new_x="LMARGIN", new_y="NEXT")
+        
+    pdf.output(file_name)
+
 
 # --- FSM VA MENYULAR ---
 class QuizForm(StatesGroup):
@@ -298,9 +329,12 @@ async def faylni_qabul_qilish(message: types.Message, state: FSMContext):
         file_data.seek(0)
         filename = message.document.file_name.lower()
         
-        text = ""
-        if filename.endswith('.pdf'): text = "".join([p.extract_text() or "" for p in PyPDF2.PdfReader(file_data).pages])
-        elif filename.endswith('.docx'): text = "\n".join([p.text for p in Document(file_data).paragraphs])
+        # O'ZGARISH: Og'ir jarayonni orqa fonga (Thread) jo'natdik
+        text = await asyncio.to_thread(read_file_sync, file_data, filename)
+
+        if not text.strip():
+            await wait_msg.edit_text("⚠️ Fayl ichidan matn topilmadi. Boshqa fayl yuboring.")
+            return
 
         daraja_toza = data['daraja'].split()[-1] 
         qoshimcha = "Matn asosida chuqur mantiqiy o'ylashni talab qiladigan murakkab savollar tuzing. DIQQAT: Telegram qoidasiga ko'ra har bir javob varianti uzunligi 90 ta belgidan oshmasligi QAT'IY SHART. Javoblar qisqa va londa bo'lsin!" if daraja_toza == "Qiyin" else "DIQQAT: Telegram qoidasiga ko'ra har bir javob varianti uzunligi 90 ta belgidan oshmasligi qat'iy shart!"
@@ -308,8 +342,9 @@ async def faylni_qabul_qilish(message: types.Message, state: FSMContext):
         prompt = f"Matn asosida {data['soni']} ta test tuz. Qiyinlik: {daraja_toza}. {qoshimcha} FAQAT JSON ro'yxat ber. Variantlarga A, B, C, D yozma!\nNamuna: [{{\"savol\": \"...\", \"variantlar\": [\"J1\", \"J2\", \"J3\", \"J4\"], \"togri_index\": 0}}]\n\nMatn: {text[:8000]}"
         await wait_msg.edit_text("🟢 AI test tuzmoqda...")
         await generate_and_save(message, prompt, wait_msg, state, data['vaqt'], data['daraja'])
-    except:
-        await wait_msg.edit_text("❌ Xatolik.")
+    except Exception as e:
+        print(f"Fayl xatosi: {e}")
+        await wait_msg.edit_text("❌ Xatolik yuz berdi.")
         await state.clear()
 
 @dp.poll_answer()
@@ -329,7 +364,11 @@ async def handle_poll_answer(poll_answer: types.PollAnswer):
 
 async def generate_and_save(message: types.Message, prompt: str, wait_msg: types.Message, state: FSMContext, vaqt: int, daraja: str):
     try:
-        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        response = await asyncio.to_thread(
+            model.generate_content, 
+            prompt, 
+            generation_config={"response_mime_type": "application/json"}
+        )
         savollar = json.loads(response.text)
         await wait_msg.delete()
 
@@ -357,6 +396,7 @@ async def generate_and_save(message: types.Message, prompt: str, wait_msg: types
         await message.answer("✅ Tayyor!", reply_markup=inline_kb)
         await state.clear()
     except Exception as e:
+        print(f"Gen xatosi: {e}")
         await wait_msg.edit_text("⚠️ Xatolik.", reply_markup=asosiy_menyu)
         await state.clear()
 
@@ -376,24 +416,10 @@ async def send_pdf(callback: types.CallbackQuery):
         wait_msg = await bot.send_message(callback.message.chat.id, "🔄 Hujjat shakllantirilmoqda. Iltimos, bir oz kuting...")
         
         savollar = json.loads(row['savollar']) if isinstance(row['savollar'], str) else row['savollar']
-        
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("helvetica", size=12)
-        pdf.multi_cell(0, 10, text=f"TEST ID: {quiz_id}", align='C')
-        pdf.cell(0, 10, text="", new_x="LMARGIN", new_y="NEXT")
-        
-        for i, s in enumerate(savollar, 1):
-            q_text = str(s.get('savol', '')).replace('\n', ' ').encode('windows-1252', 'replace').decode('windows-1252')
-            pdf.multi_cell(0, 8, text=f"{i}. {q_text}")
-            
-            for v_idx, v in enumerate(s.get('variantlar', [])):
-                v_text = str(v).replace('\n', ' ').encode('windows-1252', 'replace').decode('windows-1252')
-                pdf.multi_cell(0, 8, text=f"   {chr(65+v_idx)}) {v_text}")
-            pdf.cell(0, 5, text="", new_x="LMARGIN", new_y="NEXT")
-            
         file_name = f"/tmp/test_{quiz_id}.pdf"
-        pdf.output(file_name)
+        
+        # O'ZGARISH: PDF yasash jarayonini orqa fonga (Thread) jo'natdik
+        await asyncio.to_thread(create_pdf_sync, quiz_id, savollar, file_name)
         
         pdf_file = FSInputFile(file_name)
         await bot.send_document(callback.message.chat.id, pdf_file, caption="📥 Marhamat, testning PDF varianti.")
@@ -406,9 +432,9 @@ async def send_pdf(callback: types.CallbackQuery):
         await bot.send_message(callback.message.chat.id, f"⚠️ PDF yaratishda xatolik yuz berdi: {str(e)[:100]}")
 
 async def main():
-    keep_alive()  # Server portini ushlab turish uchun
-    await init_db_pool() # Baza ulanishlar hovuzini ishga tushirish
-    print("🚀 ASYNCPG (Super-tez) baza bilan ishga tushdi!")
+    keep_alive()
+    await init_db_pool()
+    print("🚀 QOTMAS BOT: Multi-threading yoqildi!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
