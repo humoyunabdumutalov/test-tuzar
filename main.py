@@ -1,9 +1,11 @@
+
 import asyncio
 import os
 import io
 import json
 import uuid
 import random
+import textwrap # PDF matnlarini to'g'rilash uchun yangi kutubxona
 import asyncpg
 from contextlib import suppress
 import google.generativeai as genai
@@ -22,19 +24,18 @@ from keep_alive import keep_alive
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-ADMIN_ID = 5031441892  # O'zingizning ID raqamingizni yozing
+ADMIN_ID = 5031441892  # DIQQAT: O'zingizning Telegram ID raqamingizni shu yerga yozing!
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
-# --- ASINXRON MA'LUMOTLAR BAZASI (asyncpg + Connection Pool) ---
+# --- ASINXRON MA'LUMOTLAR BAZASI ---
 db_pool = None
 
 async def init_db_pool():
     global db_pool
-    # Supabase Transaction Pooler uchun statement_cache_size=0 qat'iy shart!
     db_pool = await asyncpg.create_pool(
         DATABASE_URL, 
         min_size=5, 
@@ -52,7 +53,7 @@ async def add_user(user_id, name):
 POLL_DATA = {}   
 SESSION_SCORES = {} 
 
-# --- ORQA FONDAGI OG'IR VAZIFALAR (THREADS) UCHUN FUNKSIYALAR ---
+# --- ORQA FONDAGI OG'IR VAZIFALAR ---
 def read_file_sync(file_data, filename):
     text = ""
     try:
@@ -65,19 +66,24 @@ def read_file_sync(file_data, filename):
     return text
 
 def create_pdf_sync(quiz_id, savollar, file_name):
+    # PDF muammosi textwrap orqali to'liq hal qilindi
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("helvetica", size=12)
-    pdf.multi_cell(0, 10, text=f"TEST ID: {quiz_id}", align='C')
+    pdf.cell(0, 10, text=f"TEST ID: {quiz_id}", align='C', new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 10, text="", new_x="LMARGIN", new_y="NEXT")
+    
+    wrapper = textwrap.TextWrapper(width=75, break_long_words=True)
     
     for i, s in enumerate(savollar, 1):
         q_text = str(s.get('savol', '')).replace('\n', ' ').encode('windows-1252', 'replace').decode('windows-1252')
-        pdf.multi_cell(0, 8, text=f"{i}. {q_text}")
+        for line in wrapper.wrap(f"{i}. {q_text}"):
+            pdf.cell(0, 8, text=line, new_x="LMARGIN", new_y="NEXT")
         
         for v_idx, v in enumerate(s.get('variantlar', [])):
             v_text = str(v).replace('\n', ' ').encode('windows-1252', 'replace').decode('windows-1252')
-            pdf.multi_cell(0, 8, text=f"   {chr(65+v_idx)}) {v_text}")
+            for line in wrapper.wrap(f"   {chr(65+v_idx)}) {v_text}"):
+                pdf.cell(0, 8, text=line, new_x="LMARGIN", new_y="NEXT")
         pdf.cell(0, 5, text="", new_x="LMARGIN", new_y="NEXT")
         
     pdf.output(file_name)
@@ -261,6 +267,39 @@ async def show_stats(message: types.Message):
         
     await message.answer(f"📊 **Statistika:**\n👥 Qatnashchilar: {users_count}\n📝 Testlar: {quizzes_count}", parse_mode="Markdown")
 
+# --- YAngi: XABAR TARQATISH MANTIQI ---
+@dp.message(F.text == "📣 Xabar tarqatish")
+async def ask_broadcast_msg(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    await message.answer("Barcha foydalanuvchilarga yuboriladigan xabarni kiriting\n(Bekor qilish uchun '🔙 Bosh menyu' ni bosing):", reply_markup=admin_menyu)
+    await state.set_state(AdminState.xabar_kutish)
+
+@dp.message(AdminState.xabar_kutish)
+async def send_broadcast_msg(message: types.Message, state: FSMContext):
+    if message.text == "🔙 Bosh menyu":
+        await state.clear()
+        await message.answer("Bosh menyu.", reply_markup=asosiy_menyu)
+        return
+
+    async with db_pool.acquire() as conn:
+        users = await conn.fetch("SELECT user_id FROM users")
+    
+    await message.answer("⏳ Xabar yuborilmoqda. Iltimos, kuting...")
+    success = 0
+    fail = 0
+    for u in users:
+        try:
+            # copy_message matn, rasm yoki videoni aynan o'zidek qilib hammaga yetkazadi
+            await bot.copy_message(chat_id=int(u['user_id']), from_chat_id=message.chat.id, message_id=message.message_id)
+            success += 1
+            await asyncio.sleep(0.05) # Telegram bloklamasligi uchun tanaffus
+        except Exception:
+            fail += 1
+    
+    await message.answer(f"✅ Tarqatish yakunlandi!\n\nYetib bordi: {success} ta\nYetib bormadi (botni bloklaganlar): {fail} ta", reply_markup=asosiy_menyu)
+    await state.clear()
+
+
 # --- MANTIQ QADAMLARI ---
 @dp.message(F.text.in_(["📄 Fayldan test tuzish", "✍️ Mavzudan test tuzish"]))
 async def usul_tanlash(message: types.Message, state: FSMContext):
@@ -345,7 +384,6 @@ async def faylni_qabul_qilish(message: types.Message, state: FSMContext):
 
         prompt = f"Matn asosida {data['soni']} ta test tuz. Qiyinlik: {daraja_toza}. {qoshimcha} FAQAT JSON ro'yxat ber. Variantlarga A, B, C, D yozma!\nNamuna: [{{\"savol\": \"...\", \"variantlar\": [\"J1\", \"J2\", \"J3\", \"J4\"], \"togri_index\": 0}}]\n\nMatn: {text[:8000]}"
         
-        # Tugmasiz xabarni yangilash xavfsizroq
         await wait_msg.delete()
         wait_msg_new = await message.answer("🟢 AI test tuzmoqda...", reply_markup=ReplyKeyboardRemove())
         
@@ -406,7 +444,6 @@ async def generate_and_save(message: types.Message, prompt: str, wait_msg: types
         await state.clear()
     except Exception as e:
         print(f"Gen xatosi: {e}")
-        # Xatolikda asabni buzuvchi ValidationError oldini oldik
         await wait_msg.delete()
         await message.answer("⚠️ Test tuzishda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.", reply_markup=asosiy_menyu)
         await state.clear()
@@ -442,9 +479,9 @@ async def send_pdf(callback: types.CallbackQuery):
         await bot.send_message(callback.message.chat.id, f"⚠️ PDF yaratishda xatolik yuz berdi: {str(e)[:100]}")
 
 async def main():
-    keep_alive()  # Web-server qulamasligi uchun portni ochiq tutadi
-    await init_db_pool() # Supabase xatosini hal qildik
-    print("🚀 QOTMAS BOT: Multi-threading, xatoliklar tuzatilgan va asyncpg yoqildi!")
+    keep_alive()
+    await init_db_pool()
+    print("🚀 QOTMAS BOT: PDF muammosi hal qilindi va Tarqatish qo'shildi!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
