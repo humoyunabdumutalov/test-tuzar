@@ -66,7 +66,6 @@ def read_file_sync(file_data, filename):
     return text
 
 def create_pdf_sync(quiz_id, savollar, file_name):
-    # PDF muammosi textwrap orqali to'liq hal qilindi
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("helvetica", size=12)
@@ -75,13 +74,27 @@ def create_pdf_sync(quiz_id, savollar, file_name):
     
     wrapper = textwrap.TextWrapper(width=75, break_long_words=True)
     
+    # PDF tushunmaydigan belgilarni oddiy klaviatura belgilariga almashtirish
+    def to_safe_str(t):
+        t = str(t).replace('\n', ' ')
+        replacements = {
+            '—': '-', '–': '-', '−': '-',
+            '“': '"', '”': '"', '«': '"', '»': '"',
+            '‘': "'", '’': "'", '`': "'",
+            '…': '...', '№': '#'
+        }
+        for old, new in replacements.items():
+            t = t.replace(old, new)
+        # Qolib ketgan boshqa g'alati belgilarni xavfsiz o'tkazish
+        return t.encode('windows-1252', 'replace').decode('windows-1252')
+    
     for i, s in enumerate(savollar, 1):
-        q_text = str(s.get('savol', '')).replace('\n', ' ').encode('windows-1252', 'replace').decode('windows-1252')
+        q_text = to_safe_str(s.get('savol', ''))
         for line in wrapper.wrap(f"{i}. {q_text}"):
             pdf.cell(0, 8, text=line, new_x="LMARGIN", new_y="NEXT")
         
         for v_idx, v in enumerate(s.get('variantlar', [])):
-            v_text = str(v).replace('\n', ' ').encode('windows-1252', 'replace').decode('windows-1252')
+            v_text = to_safe_str(v)
             for line in wrapper.wrap(f"   {chr(65+v_idx)}) {v_text}"):
                 pdf.cell(0, 8, text=line, new_x="LMARGIN", new_y="NEXT")
         pdf.cell(0, 5, text="", new_x="LMARGIN", new_y="NEXT")
