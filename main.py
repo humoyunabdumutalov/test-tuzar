@@ -136,14 +136,13 @@ def create_pptx_sync(slaydlar_json, file_name, dizayn_nomi):
         
         # MANA SHU QISM MO'JIZA YARATADI:
         tf.word_wrap = True 
-        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE # Matnni ramkaga avtomatik sig'dirish
-        
         tf.clear() 
         qismlar = data.get('qismlar', [])
         for point in qismlar:
             p = tf.add_paragraph()
             p.text = point
             p.level = 0
+            p.font.size = Pt(20)  # Slayd uchun eng ideal va chiroyli shrift o'lchami
             # Endi qo'lda shriftni o'zgartirish shart emas, PowerPoint o'zi hal qiladi!
                 
     prs.save(file_name)
@@ -440,9 +439,9 @@ async def generate_slide_content(message: types.Message, state: FSMContext):
     prompt = f"""Mavzu: '{mavzu}'. Shu mavzu bo'yicha {soni} ta slayd uchun professional taqdimot rejasi tuz.
     QOIDALAR:
     1. Sarlavhalar sof, raqamlarsiz bo'lsin.
-    2. Har bir slayd matni 4-5 ta batafsil nuqtadan (bullet-points) iborat bo'lsin.
-    3. Ma'lumotlar chuqur, ilmiy va keng qamrovli bo'lsin! Gaplarni qisqartirma.
-    4. FAQAT JSON array qaytar: [{{"sarlavha": "Mavzu nomi", "qismlar": ["Batafsil 1-qism...", "Batafsil 2-qism...", "Batafsil 3-qism..."]}}]"""
+    2. Har bir slayd matni 4-5 ta QISQA va Londa nuqtadan (bullet-points) iborat bo'lsin.
+    3. HAR BIR NUQTA maksimal 10-15 ta so'zdan oshmasin! (Slayd uchun faqat asosiy kalit gaplarni yoz, insho yozma).
+    4. FAQAT JSON array qaytar: [{{"sarlavha": "Mavzu nomi", "qismlar": ["1-qisqa fikr", "2-qisqa fikr"]}}]"""
     
     try:
         response = await asyncio.to_thread(model.generate_content, prompt, generation_config={"response_mime_type": "application/json"})
