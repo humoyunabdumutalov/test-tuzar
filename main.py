@@ -18,6 +18,7 @@ from fpdf import FPDF
 import PyPDF2
 from docx import Document
 from pptx import Presentation
+from pptx.util import Pt  # Shrift o'lchamini to'g'rilash uchun yangi import
 from keep_alive import keep_alive
 
 # --- SOZLAMALAR ---
@@ -103,15 +104,26 @@ def create_pdf_sync(quiz_id, savollar, file_name, bot_username):
     pdf.output(file_name)
 
 def create_pptx_sync(slaydlar_json, file_name, dizayn_nomi):
-    prs = Presentation()
+    # Shablon fayllarini chaqirish (template_kok.pptx, template_yashil.pptx, template_rasmiy.pptx)
+    template_file = f"template_{dizayn_nomi}.pptx"
+    
+    # Agar loyiha papkasida siz yasagan shablon bo'lsa, shuni ochadi. Yo'qsa standart oq fonli ochadi.
+    if os.path.exists(template_file):
+        prs = Presentation(template_file)
+    else:
+        prs = Presentation()
     
     # 1-Slayd (Sarlavha)
     title_slide_layout = prs.slide_layouts[0]
     slide = prs.slides.add_slide(title_slide_layout)
     title = slide.shapes.title
-    subtitle = slide.placeholders[1]
+    
+    # Ba'zi shablonlarda taglavha (subtitle) bo'lmasligi mumkin, shuning uchun tekshiramiz
+    if len(slide.placeholders) > 1:
+        subtitle = slide.placeholders[1]
+        subtitle.text = f"Art of Engineering AI tomonidan tayyorlandi"
+    
     title.text = "Sizning Taqdimotingiz"
-    subtitle.text = f"Tanlangan dizayn: {dizayn_nomi}\nAI orqali avtomatik yaratildi"
 
     # Matnli slaydlar
     bullet_slide_layout = prs.slide_layouts[1]
@@ -121,16 +133,23 @@ def create_pptx_sync(slaydlar_json, file_name, dizayn_nomi):
         title_shape = shapes.title
         body_shape = shapes.placeholders[1]
         
-        title_shape.text = data.get('sarlavha', 'Sarlavha yo\'q')
+        title_shape.text = data.get('sarlavha', 'Sarlavha')
         tf = body_shape.text_frame
+        tf.word_wrap = True  # Matnni ramkadan chiqarmaslik
         
+        # Slayddagi nuqtalar (bullet points) ni joylash
+        tf.clear() # Dastlabki bo'sh qatorni tozalash
         qismlar = data.get('qismlar', [])
-        if qismlar:
-            tf.text = qismlar[0]  
-            for point in qismlar[1:]:
-                p = tf.add_paragraph()
-                p.text = point
-                p.level = 0
+        for point in qismlar:
+            p = tf.add_paragraph()
+            p.text = point
+            p.level = 0
+            
+            # Matn juda ko'p bo'lsa shriftni kichraytirish (sig'ishi uchun)
+            if len(point) > 100:
+                p.font.size = Pt(14)
+            else:
+                p.font.size = Pt(18)
                 
     prs.save(file_name)
 
@@ -171,7 +190,6 @@ slayd_soni_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="5 ta slay
 bekor_menyu = ReplyKeyboardMarkup(keyboard=[bekor_tugma], resize_keyboard=True)
 admin_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📊 Umumiy Statistika"), KeyboardButton(text="📣 Xabar tarqatish")], [KeyboardButton(text="🥇 To'liq ro'yxat (Profillar)")], [KeyboardButton(text="🔙 Bosh menyu")]], resize_keyboard=True)
 
-# YAngi: Inline Dizayn tugmalari
 dizayn_inline = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="🔵 Zamonaviy (Ko'k)", callback_data="dizayn_kok")],
@@ -383,18 +401,17 @@ async def get_slide_count(message: types.Message, state: FSMContext):
     
     await state.set_state(SlideForm.dizayn)
     
-    # DIQQAT: O'zingiz yasadigan 3 ta dizaynning rasmini bitta qilib (collage) yasab, telegramga yuklab, linkini shu yerga yozing.
-    # Hozircha ishlashi uchun vaqtinchalik namuna rasm qo'ydim:
-    rasm_url = "https://dummyimage.com/600x400/000/fff&text=Dizayn+Shablonlari" 
+    # Rasmni to'g'ridan-to'g'ri loyiha papkasidan o'qiymiz
+    dizayn_rasmi = FSInputFile("dizaynlar.jpg")
     
     try:
         msg = await message.answer_photo(
-            photo=rasm_url,
-            caption="Taqdimot uchun quyidagi dizaynlardan birini tanlang:", 
+            photo=dizayn_rasmi,
+            caption="🖼 Taqdimot uchun quyidagi dizaynlardan birini tanlang:", 
             reply_markup=dizayn_inline
         )
     except Exception:
-        # Agar rasm ochilmasa, oddiy matn orqali davom etadi
+        # Agar rasm fayli topilmasa, oddiy matn orqali davom etadi
         msg = await message.answer("Taqdimot uchun quyidagi dizaynlardan birini tanlang:", reply_markup=dizayn_inline)
         
     await track_msg(state, msg.message_id)
@@ -405,11 +422,11 @@ async def get_slide_design_inline(callback: types.CallbackQuery, state: FSMConte
     await state.update_data(dizayn=dizayn_tanlovi)
     await state.set_state(SlideForm.mavzu)
     
-    await callback.message.delete() # Tanlab bo'lingach rasmli xabarni o'chiramiz
+    await callback.message.delete() 
     
     msg = await bot.send_message(
         callback.message.chat.id, 
-        "Ajoyib tanlov! Endi taqdimot mavzusini batafsil yozing.\n(Masalan: Issiqlik elektr stansiyalarining texnologik jarayonlari)", 
+        "Ajoyib tanlov! Endi taqdimot mavzusini batafsil yozing.\n(Masalan: O'zbekistonda Quyosh energiyasi istiqbollari)", 
         reply_markup=bekor_menyu
     )
     await track_msg(state, msg.message_id)
@@ -425,13 +442,12 @@ async def generate_slide_content(message: types.Message, state: FSMContext):
     dizayn = data['dizayn']
     mavzu = message.text
     
-    # Promptni mukammallashtirdik: ortiqcha yozuvlar yo'q, chuqur ilmiy ma'lumotlar bor!
-    prompt = f"""Mavzu: '{mavzu}'. Shu mavzu bo'yicha {soni} ta slayd uchun mukammal va keng qamrovli taqdimot rejasi tuz.
+    prompt = f"""Mavzu: '{mavzu}'. Shu mavzu bo'yicha {soni} ta slayd uchun professional taqdimot rejasi tuz.
     QOIDALAR:
-    1. Sarlavhalarda "1-slayd", "2-slayd" kabi raqamlar QAT'IYAN ishlashilmasin. Faqat sof sarlavha yozilsin.
-    2. Har bir slaydning "qismlar" ro'yxatida ma'lumotlar iloji boricha ko'p, batafsil, ilmiy va chuqur bo'lsin (kamida 4-5 ta uzun va tushunarli gaplar).
-    3. FAQAT JSON formatida array qaytar. Boshqa hech qanday so'z yozma!
-    Format: [{{"sarlavha": "Sof mavzu nomi", "qismlar": ["Batafsil ma'lumot 1...", "Batafsil ma'lumot 2..."]}}]"""
+    1. Sarlavhalar sof, raqamlarsiz bo'lsin.
+    2. Har bir slayd matni 4-5 ta batafsil nuqtadan (bullet-points) iborat bo'lsin.
+    3. HAR BIR NUQTA (point) maksimal 15-20 ta so'zdan oshmasin (ramkadan chiqib ketmasligi uchun).
+    4. FAQAT JSON array qaytar: [{{"sarlavha": "Mavzu nomi", "qismlar": ["1-qism", "2-qism", "3-qism"]}}]"""
     
     try:
         response = await asyncio.to_thread(model.generate_content, prompt, generation_config={"response_mime_type": "application/json"})
@@ -441,7 +457,7 @@ async def generate_slide_content(message: types.Message, state: FSMContext):
         await asyncio.to_thread(create_pptx_sync, slaydlar_json, file_name, dizayn)
         
         pptx_file = FSInputFile(file_name)
-        await bot.send_document(message.chat.id, pptx_file, caption=f"✅ Marhamat, sizning taqdimotingiz tayyor!\nTanlangan dizayn: {dizayn}", reply_markup=asosiy_menyu)
+        await bot.send_document(message.chat.id, pptx_file, caption=f"✅ Marhamat, sizning taqdimotingiz tayyor!", reply_markup=asosiy_menyu)
         
         os.remove(file_name)
         await wait_msg.delete()
