@@ -24,7 +24,7 @@ from keep_alive import keep_alive
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-ADMIN_ID = 5031441892  # Dasturni ishlatishdan oldin shu yerga o'z ID raqamingizni yozing!
+ADMIN_ID = 5031441892  # O'zingizning Telegram ID raqamingizni yozing!
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -111,7 +111,7 @@ def create_pptx_sync(slaydlar_json, file_name, dizayn_nomi):
     title = slide.shapes.title
     subtitle = slide.placeholders[1]
     title.text = "Sizning Taqdimotingiz"
-    subtitle.text = f"Dizayn: {dizayn_nomi}\nAI orqali avtomatik yaratildi"
+    subtitle.text = f"Tanlangan dizayn: {dizayn_nomi}\nAI orqali avtomatik yaratildi"
 
     # Matnli slaydlar
     bullet_slide_layout = prs.slide_layouts[1]
@@ -167,12 +167,18 @@ daraja_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🟢 Oson (1 
 soni_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="5"), KeyboardButton(text="10"), KeyboardButton(text="15"), KeyboardButton(text="20")], bekor_tugma], resize_keyboard=True)
 vaqt_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="15 soniya"), KeyboardButton(text="30 soniya")], [KeyboardButton(text="60 soniya"), KeyboardButton(text="⏳ Cheklovsiz")], bekor_tugma], resize_keyboard=True)
 
-# Slayd uchun menyular
 slayd_soni_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="5 ta slayd"), KeyboardButton(text="7 ta slayd"), KeyboardButton(text="10 ta slayd")], bekor_tugma], resize_keyboard=True)
-dizayn_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔵 Zamonaviy (Ko'k)"), KeyboardButton(text="🟢 Tabiat (Yashil)")], [KeyboardButton(text="🟠 Qat'iy (Rasmiy)")], bekor_tugma], resize_keyboard=True)
-
 bekor_menyu = ReplyKeyboardMarkup(keyboard=[bekor_tugma], resize_keyboard=True)
 admin_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📊 Umumiy Statistika"), KeyboardButton(text="📣 Xabar tarqatish")], [KeyboardButton(text="🥇 To'liq ro'yxat (Profillar)")], [KeyboardButton(text="🔙 Bosh menyu")]], resize_keyboard=True)
+
+# YAngi: Inline Dizayn tugmalari
+dizayn_inline = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="🔵 Zamonaviy (Ko'k)", callback_data="dizayn_kok")],
+        [InlineKeyboardButton(text="🟢 Tabiat (Yashil)", callback_data="dizayn_yashil")],
+        [InlineKeyboardButton(text="🟠 Rasmiy (Apelsin)", callback_data="dizayn_rasmiy")]
+    ]
+)
 
 # --- YORDAMCHI FUNKSIYALAR ---
 async def track_msg(state: FSMContext, msg_id: int):
@@ -237,7 +243,6 @@ async def show_reyting(message: types.Message):
 async def show_profile(message: types.Message):
     async with db_pool.acquire() as conn:
         u = await conn.fetchrow("SELECT name, score, tests_taken FROM users WHERE user_id = $1", str(message.from_user.id))
-    
     if u:
         text = f"👤 **Sizning Profilingiz:**\n\nIsm: {u['name']}\n✅ Jami to'plangan ball: {u['score']}\n📝 Yechilgan testlar soni: {u['tests_taken']} marta"
     else:
@@ -258,14 +263,11 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
         quiz_id = command.args
         async with db_pool.acquire() as conn:
             quiz_row = await conn.fetchrow("SELECT vaqt, daraja, savollar FROM quizzes WHERE quiz_id = $1", quiz_id)
-            
             if quiz_row:
                 await conn.execute("UPDATE users SET tests_taken = tests_taken + 1 WHERE user_id = $1", str(message.from_user.id))
-                
                 await message.answer("🚀 Test boshlanmoqda...", reply_markup=ReplyKeyboardRemove())
                 vaqt_cheklovi, daraja, savollar_json = quiz_row['vaqt'], quiz_row['daraja'], quiz_row['savollar']
                 savollar = json.loads(savollar_json)
-                
                 user_id = message.from_user.id
                 SESSION_SCORES[user_id] = 0 
                 jami_savollar = len(savollar)
@@ -275,13 +277,11 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                     q = data['savol'][:250]
                     opts = [str(opt)[:100] for opt in data['variantlar']][:4]
                     correct = int(data.get('togri_index', 0))
-
                     quiz_kwargs = {
                         "chat_id": message.chat.id, "question": q, "options": opts,
                         "type": 'quiz', "correct_option_id": correct, "is_anonymous": False 
                     }
                     if vaqt_cheklovi > 0: quiz_kwargs["open_period"] = vaqt_cheklovi
-
                     sent_poll = await bot.send_poll(**quiz_kwargs)
                     POLL_DATA[sent_poll.poll.id] = {"correct": correct, "points": ball_qiymati}
                     await asyncio.sleep(vaqt_cheklovi + 1 if vaqt_cheklovi > 0 else 2.0)
@@ -297,23 +297,18 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
             else:
                 await message.answer("⚠️ Ushbu test topilmadi yoki muddati o'tgan.")
                 return
-
     await message.answer("Assalomu alaykum! Xush kelibsiz.\nO'zingizga kerakli bo'limni tanlang:", reply_markup=asosiy_menyu)
 
 @dp.poll_answer()
 async def handle_poll_answer(poll_answer: types.PollAnswer):
     poll_id = poll_answer.poll_id
     user_id_int = poll_answer.user.id
-    user_id_str = str(user_id_int)
     tanlangan_javob = poll_answer.option_ids[0] if poll_answer.option_ids else -1
-
-    if poll_id in POLL_DATA:
-        if tanlangan_javob == POLL_DATA[poll_id]["correct"]:
-            ball = POLL_DATA[poll_id]["points"]
-            SESSION_SCORES[user_id_int] = SESSION_SCORES.get(user_id_int, 0) + 1
-            
-            async with db_pool.acquire() as conn:
-                await conn.execute("UPDATE users SET score = score + $1 WHERE user_id = $2", ball, user_id_str)
+    if poll_id in POLL_DATA and tanlangan_javob == POLL_DATA[poll_id]["correct"]:
+        ball = POLL_DATA[poll_id]["points"]
+        SESSION_SCORES[user_id_int] = SESSION_SCORES.get(user_id_int, 0) + 1
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE users SET score = score + $1 WHERE user_id = $2", ball, str(user_id_int))
 
 # --- ADMIN PANEL QISMI ---
 @dp.message(Command("admin"))
@@ -332,7 +327,6 @@ async def show_stats(message: types.Message):
     async with db_pool.acquire() as conn:
         users_count = await conn.fetchval("SELECT COUNT(*) FROM users")
         quizzes_count = await conn.fetchval("SELECT COUNT(*) FROM quizzes")
-        
     await message.answer(f"📊 **Loyiha Statistikasi:**\n👥 Qatnashchilar: {users_count} ta\n📝 Yaratilgan testlar: {quizzes_count} ta", parse_mode="Markdown")
 
 @dp.message(F.text == "🥇 To'liq ro'yxat (Profillar)")
@@ -340,11 +334,9 @@ async def show_full_rating(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     async with db_pool.acquire() as conn:
         users = await conn.fetch("SELECT user_id, name, score FROM users ORDER BY score DESC LIMIT 50")
-        
     text = "👑 **TOP-50 Ro'yxat (Profillar):**\nBarcha foydalanuvchilar ismining ustiga bosib, yutuq berish uchun ularning lichkasiga o'tishingiz mumkin.\n\n"
     for i, u in enumerate(users, 1):
         text += f"{i}. [{u['name']}](tg://user?id={u['user_id']}) — {u['score']} ball\n"
-        
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "📣 Xabar tarqatish")
@@ -359,10 +351,8 @@ async def send_broadcast_msg(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer("Bosh menyu.", reply_markup=asosiy_menyu)
         return
-
     async with db_pool.acquire() as conn:
         users = await conn.fetch("SELECT user_id FROM users")
-    
     await message.answer("⏳ Xabar yuborilmoqda. Iltimos, kuting...")
     success, fail = 0, 0
     for u in users:
@@ -372,7 +362,6 @@ async def send_broadcast_msg(message: types.Message, state: FSMContext):
             await asyncio.sleep(0.05) 
         except Exception:
             fail += 1
-    
     await message.answer(f"✅ Tarqatish yakunlandi!\n\nYetib bordi: {success} ta\nBloklaganlar: {fail} ta", reply_markup=asosiy_menyu)
     await state.clear()
 
@@ -391,29 +380,58 @@ async def get_slide_count(message: types.Message, state: FSMContext):
     soni_str = message.text.split()[0]
     if not soni_str.isdigit(): return
     await state.update_data(soni=int(soni_str))
+    
     await state.set_state(SlideForm.dizayn)
-    msg = await message.answer("Taqdimot uchun qaysi dizayn uslubi ko'proq yoqadi?", reply_markup=dizayn_menyu)
+    
+    # DIQQAT: O'zingiz yasadigan 3 ta dizaynning rasmini bitta qilib (collage) yasab, telegramga yuklab, linkini shu yerga yozing.
+    # Hozircha ishlashi uchun vaqtinchalik namuna rasm qo'ydim:
+    rasm_url = "https://dummyimage.com/600x400/000/fff&text=Dizayn+Shablonlari" 
+    
+    try:
+        msg = await message.answer_photo(
+            photo=rasm_url,
+            caption="Taqdimot uchun quyidagi dizaynlardan birini tanlang:", 
+            reply_markup=dizayn_inline
+        )
+    except Exception:
+        # Agar rasm ochilmasa, oddiy matn orqali davom etadi
+        msg = await message.answer("Taqdimot uchun quyidagi dizaynlardan birini tanlang:", reply_markup=dizayn_inline)
+        
     await track_msg(state, msg.message_id)
 
-@dp.message(SlideForm.dizayn)
-async def get_slide_design(message: types.Message, state: FSMContext):
-    await track_msg(state, message.message_id)
-    await state.update_data(dizayn=message.text)
+@dp.callback_query(SlideForm.dizayn, F.data.startswith("dizayn_"))
+async def get_slide_design_inline(callback: types.CallbackQuery, state: FSMContext):
+    dizayn_tanlovi = callback.data.split("_")[1]
+    await state.update_data(dizayn=dizayn_tanlovi)
     await state.set_state(SlideForm.mavzu)
-    msg = await message.answer("Ajoyib! Endi taqdimot mavzusini batafsil yozing.\n(Masalan: O'zbekistonda Quyosh energiyasining kelajagi)", reply_markup=bekor_menyu)
+    
+    await callback.message.delete() # Tanlab bo'lingach rasmli xabarni o'chiramiz
+    
+    msg = await bot.send_message(
+        callback.message.chat.id, 
+        "Ajoyib tanlov! Endi taqdimot mavzusini batafsil yozing.\n(Masalan: Issiqlik elektr stansiyalarining texnologik jarayonlari)", 
+        reply_markup=bekor_menyu
+    )
     await track_msg(state, msg.message_id)
+    await callback.answer()
 
 @dp.message(SlideForm.mavzu, F.text)
 async def generate_slide_content(message: types.Message, state: FSMContext):
     data = await state.get_data()
     await delete_tracked_msgs(message.chat.id, state)
-    wait_msg = await message.answer("🟢 AI slaydlar matnini va dizaynni tayyorlamoqda. Iltimos, bir oz kuting...", reply_markup=ReplyKeyboardRemove())
+    wait_msg = await message.answer("🟢 AI slaydlar matnini tayyorlamoqda. Iltimos, bir oz kuting...", reply_markup=ReplyKeyboardRemove())
     
     soni = data['soni']
     dizayn = data['dizayn']
     mavzu = message.text
     
-    prompt = f"Mavzu: '{mavzu}'. Shu mavzu bo'yicha {soni} ta slayd uchun taqdimot rejasi tuz. FAQAT JSON formatida array qaytar.\nFormat: [{{\"sarlavha\": \"1-slayd mavzusi\", \"qismlar\": [\"Qisqa fikr 1\", \"Qisqa fikr 2\", \"Qisqa fikr 3\"]}}]. Hech qanday qo'shimcha matn yozma!"
+    # Promptni mukammallashtirdik: ortiqcha yozuvlar yo'q, chuqur ilmiy ma'lumotlar bor!
+    prompt = f"""Mavzu: '{mavzu}'. Shu mavzu bo'yicha {soni} ta slayd uchun mukammal va keng qamrovli taqdimot rejasi tuz.
+    QOIDALAR:
+    1. Sarlavhalarda "1-slayd", "2-slayd" kabi raqamlar QAT'IYAN ishlashilmasin. Faqat sof sarlavha yozilsin.
+    2. Har bir slaydning "qismlar" ro'yxatida ma'lumotlar iloji boricha ko'p, batafsil, ilmiy va chuqur bo'lsin (kamida 4-5 ta uzun va tushunarli gaplar).
+    3. FAQAT JSON formatida array qaytar. Boshqa hech qanday so'z yozma!
+    Format: [{{"sarlavha": "Sof mavzu nomi", "qismlar": ["Batafsil ma'lumot 1...", "Batafsil ma'lumot 2..."]}}]"""
     
     try:
         response = await asyncio.to_thread(model.generate_content, prompt, generation_config={"response_mime_type": "application/json"})
@@ -601,7 +619,7 @@ async def send_pdf(callback: types.CallbackQuery):
 async def main():
     keep_alive()
     await init_db_pool()
-    print("🚀 BOT ISHGA TUSHMQODA: Barcha Test, PDF, Reyting va Slayd(PPTX) tizimlari yoqildi!")
+    print("🚀 BOT ISHGA TUSHMQODA: Barcha tizimlar to'liq va mukammal ishlab turibdi!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
