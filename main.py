@@ -1,11 +1,10 @@
-
 import asyncio
 import os
 import io
 import json
 import uuid
 import random
-import textwrap # PDF matnlarini to'g'rilash uchun yangi kutubxona
+import textwrap
 import asyncpg
 from contextlib import suppress
 import google.generativeai as genai
@@ -24,23 +23,20 @@ from keep_alive import keep_alive
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-ADMIN_ID = 5031441892  # DIQQAT: O'zingizning Telegram ID raqamingizni shu yerga yozing!
+ADMIN_ID = 5031441892  # Dasturni ishlatishdan oldin shu yerga o'z ID raqamingizni yozing!
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
-# --- ASINXRON MA'LUMOTLAR BAZASI ---
+# --- BAZA ---
 db_pool = None
 
 async def init_db_pool():
     global db_pool
     db_pool = await asyncpg.create_pool(
-        DATABASE_URL, 
-        min_size=5, 
-        max_size=20,
-        statement_cache_size=0
+        DATABASE_URL, min_size=5, max_size=20, statement_cache_size=0
     )
     async with db_pool.acquire() as conn:
         await conn.execute('''CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY, name TEXT, score INTEGER, tests_taken INTEGER)''')
@@ -53,7 +49,14 @@ async def add_user(user_id, name):
 POLL_DATA = {}   
 SESSION_SCORES = {} 
 
-# --- ORQA FONDAGI OG'IR VAZIFALAR ---
+# --- YORDAMCHI XABARNOMA FUNKSIYASI ---
+async def notify_admin(context: str, error_msg: str):
+    """Xatoliklarni darhol adminga yuborish"""
+    if ADMIN_ID != 0:
+        with suppress(Exception):
+            await bot.send_message(ADMIN_ID, f"🚨 **TIZIMDA XATOLIK**\n*Joylashuv:* {context}\n\n`{error_msg}`", parse_mode="Markdown")
+
+# --- OG'IR VAZIFALAR ---
 def read_file_sync(file_data, filename):
     text = ""
     try:
@@ -62,30 +65,31 @@ def read_file_sync(file_data, filename):
         elif filename.endswith('.docx'):
             text = "\n".join([p.text for p in Document(file_data).paragraphs])
     except Exception as e:
-        print(f"Faylni o'qishda xatolik: {e}")
+        print(f"Fayl o'qish xatosi: {e}")
     return text
 
-def create_pdf_sync(quiz_id, savollar, file_name):
+def create_pdf_sync(quiz_id, savollar, file_name, bot_username):
     pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("helvetica", size=12)
-    pdf.cell(0, 10, text=f"TEST ID: {quiz_id}", align='C', new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 10, text="", new_x="LMARGIN", new_y="NEXT")
     
+    # WATERMARK: Botingiz havolasi va kanalingiz nomi reklama sifatida
+    pdf.set_font("helvetica", style="I", size=10)
+    pdf.set_text_color(128, 128, 128)
+    pdf.cell(0, 10, text=f"Ushbu test @{bot_username} tomonidan yaratildi | Art of Engineering", align='R', new_x="LMARGIN", new_y="NEXT")
+    
+    # Asosiy dizayn
+    pdf.set_font("helvetica", style="B", size=14)
+    pdf.set_text_color(0, 0, 0)
+    pdf.cell(0, 10, text=f"TEST ID: {quiz_id}", align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 5, text="", new_x="LMARGIN", new_y="NEXT")
+    
+    pdf.set_font("helvetica", size=12)
     wrapper = textwrap.TextWrapper(width=75, break_long_words=True)
     
-    # PDF tushunmaydigan belgilarni oddiy klaviatura belgilariga almashtirish
     def to_safe_str(t):
         t = str(t).replace('\n', ' ')
-        replacements = {
-            '—': '-', '–': '-', '−': '-',
-            '“': '"', '”': '"', '«': '"', '»': '"',
-            '‘': "'", '’': "'", '`': "'",
-            '…': '...', '№': '#'
-        }
-        for old, new in replacements.items():
+        for old, new in {'—': '-', '–': '-', '−': '-', '“': '"', '”': '"', '«': '"', '»': '"', '‘': "'", '’': "'", '`': "'", '…': '...', '№': '#'}.items():
             t = t.replace(old, new)
-        # Qolib ketgan boshqa g'alati belgilarni xavfsiz o'tkazish
         return t.encode('windows-1252', 'replace').decode('windows-1252')
     
     for i, s in enumerate(savollar, 1):
@@ -101,8 +105,7 @@ def create_pdf_sync(quiz_id, savollar, file_name):
         
     pdf.output(file_name)
 
-
-# --- FSM VA MENYULAR ---
+# --- MENYULAR (Yangi UI) ---
 class QuizForm(StatesGroup):
     usul = State()
     daraja = State() 
@@ -116,17 +119,18 @@ class AdminState(StatesGroup):
 
 asosiy_menyu = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📄 Fayldan test tuzish"), KeyboardButton(text="✍️ Mavzudan test tuzish")],
-        [KeyboardButton(text="🏆 Reyting"), KeyboardButton(text="👤 Profil")],
-        [KeyboardButton(text="ℹ️ Yordam")]
-    ], resize_keyboard=True, input_field_placeholder="Quyidagilardan birini tanlang:"
+        [KeyboardButton(text="📄 Fayldan test yasash"), KeyboardButton(text="🤖 AI Mavzudan yasash")],
+        [KeyboardButton(text="🏆 Liderlar taxtasi"), KeyboardButton(text="👤 Mening profilim")],
+        [KeyboardButton(text="ℹ️ Yordam va qoidalar")]
+    ], resize_keyboard=True, input_field_placeholder="O'zingizga kerakli bo'limni tanlang 👇"
 )
 
 bekor_tugma = [KeyboardButton(text="🔙 Bekor qilish")]
 
 daraja_menyu = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="🟢 Oson"), KeyboardButton(text="🟡 O'rtacha"), KeyboardButton(text="🔴 Qiyin")],
+        [KeyboardButton(text="🟢 Oson (1 ball)"), KeyboardButton(text="🟡 O'rtacha (2 ball)")],
+        [KeyboardButton(text="🔴 Qiyin (3 ball)")],
         bekor_tugma
     ], resize_keyboard=True
 )
@@ -147,9 +151,11 @@ vaqt_menyu = ReplyKeyboardMarkup(
 )
 
 bekor_menyu = ReplyKeyboardMarkup(keyboard=[bekor_tugma], resize_keyboard=True)
+
 admin_menyu = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="📣 Xabar tarqatish")],
+        [KeyboardButton(text="📊 Umumiy Statistika"), KeyboardButton(text="📣 Xabar tarqatish")],
+        [KeyboardButton(text="🥇 To'liq ro'yxat (Profillar)")],
         [KeyboardButton(text="🔙 Bosh menyu")]
     ], resize_keyboard=True
 )
@@ -172,39 +178,63 @@ async def delete_tracked_msgs(chat_id: int, state: FSMContext):
 # --- ASOSIY BUYRUQLAR ---
 @dp.message(Command("id"))
 async def get_id(message: types.Message):
-    await message.answer(f"ID: `{message.from_user.id}`", parse_mode="Markdown")
+    await message.answer(f"Sizning ID raqamingiz: `{message.from_user.id}`\nUni nusxalab oling.", parse_mode="Markdown")
 
 @dp.message(F.text == "🔙 Bekor qilish")
 async def bekor_qilish_handler(message: types.Message, state: FSMContext):
     await delete_tracked_msgs(message.chat.id, state)
     await state.clear()
-    await message.answer("❌ Bekor qilindi.", reply_markup=asosiy_menyu)
+    await message.answer("❌ Jarayon bekor qilindi.", reply_markup=asosiy_menyu)
 
-@dp.message(F.text == "🏆 Reyting")
+@dp.message(F.text == "🏆 Liderlar taxtasi")
 async def show_reyting(message: types.Message):
+    user_id = str(message.from_user.id)
     async with db_pool.acquire() as conn:
-        users = await conn.fetch("SELECT name, score FROM users ORDER BY score DESC LIMIT 10")
+        top_users = await conn.fetch("SELECT name, score FROM users ORDER BY score DESC LIMIT 10")
+        
+        # Shaxsiy o'rinni hisoblash
+        user_data = await conn.fetchrow("SELECT score FROM users WHERE user_id = $1", user_id)
+        if user_data:
+            user_score = user_data['score']
+            higher_users_count = await conn.fetchval("SELECT COUNT(*) FROM users WHERE score > $1", user_score)
+            user_rank = higher_users_count + 1
+            
+            person_above = await conn.fetchrow("SELECT score FROM users WHERE score > $1 ORDER BY score ASC LIMIT 1", user_score)
+            diff = person_above['score'] - user_score if person_above else 0
+        else:
+            user_score, user_rank, diff = 0, "Yo'q", 0
+
+    text = "🏆 **TOP-10 QAHRAMONLAR:**\n\n"
+    for i, u in enumerate(top_users, 1):
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "🎗"
+        text += f"{medal} {i}. {u['name']} — {u['score']} ball\n"
+        
+    text += f"\n──────────────\n"
+    text += f"👤 **Sizning o'rningiz:** {user_rank}\n"
+    text += f"🎯 **Shaxsiy ballingiz:** {user_score}\n"
     
-    text = "🏆 **TOP-10 REYTING:**\n\n"
-    for i, u in enumerate(users, 1):
-        text += f"{i}. {u['name']} — {u['score']} ball\n"
+    if diff > 0:
+        text += f"🚀 *Keyingi o'ringa o'tish uchun sizga yana {diff} ball kerak!*"
+    elif user_rank == 1:
+        text += f"👑 *Siz hozirda eng yuqori o'rindasiz!*"
+        
     await message.answer(text, parse_mode="Markdown")
 
-@dp.message(F.text == "👤 Profil")
+@dp.message(F.text == "👤 Mening profilim")
 async def show_profile(message: types.Message):
     async with db_pool.acquire() as conn:
         u = await conn.fetchrow("SELECT name, score, tests_taken FROM users WHERE user_id = $1", str(message.from_user.id))
     
     if u:
-        text = f"👤 **Profil:**\n\nIsm: {u['name']}\n✅ Jami ball: {u['score']}\n📝 Yechilgan testlar: {u['tests_taken']} marta"
+        text = f"👤 **Sizning Profilingiz:**\n\nIsm: {u['name']}\n✅ Jami to'plangan ball: {u['score']}\n📝 Yechilgan testlar soni: {u['tests_taken']} marta"
     else:
         text = "Siz hali test yechmadingiz."
     await message.answer(text, parse_mode="Markdown")
 
-@dp.message(F.text == "ℹ️ Yordam")
+@dp.message(F.text == "ℹ️ Yordam va qoidalar")
 async def show_help(message: types.Message):
-    help_text = "💡 Test tuzish uchun menyudan usul tanlang. Oson=1, O'rtacha=2, Qiyin=3 ball."
-    await message.answer(help_text)
+    help_text = "💡 **Qoidalar:**\n\nTest yaratish uchun pastdagi tugmalardan birini tanlang. Qiyinlik darajasiga qarab ballar beriladi:\n🟢 Oson = 1 ball\n🟡 O'rtacha = 2 ball\n🔴 Qiyin = 3 ball\n\nDo'stlaringiz bilan ulashing va eng yuqori ballni to'plang!"
+    await message.answer(help_text, parse_mode="Markdown")
 
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext, command: CommandObject = None):
@@ -213,7 +243,6 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
 
     if command and command.args:
         quiz_id = command.args
-        
         async with db_pool.acquire() as conn:
             quiz_row = await conn.fetchrow("SELECT vaqt, daraja, savollar FROM quizzes WHERE quiz_id = $1", quiz_id)
             
@@ -227,8 +256,7 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                 user_id = message.from_user.id
                 SESSION_SCORES[user_id] = 0 
                 jami_savollar = len(savollar)
-                
-                ball_qiymati = 3 if "🔴 Qiyin" in daraja else (2 if "🟡 O'rtacha" in daraja else 1)
+                ball_qiymati = 3 if "Qiyin" in daraja else (2 if "O'rtacha" in daraja else 1)
 
                 for data in savollar:
                     q = data['savol'][:250]
@@ -243,7 +271,6 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
 
                     sent_poll = await bot.send_poll(**quiz_kwargs)
                     POLL_DATA[sent_poll.poll.id] = {"correct": correct, "points": ball_qiymati}
-
                     await asyncio.sleep(vaqt_cheklovi + 1 if vaqt_cheklovi > 0 else 2.0)
 
                 if vaqt_cheklovi == 0:
@@ -252,39 +279,51 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
 
                 togri_javoblar = SESSION_SCORES.get(user_id, 0)
                 foiz = int((togri_javoblar / jami_savollar) * 100) if jami_savollar > 0 else 0
-                await message.answer(f"🏁 **Yakunlandi!**\nNatija: {togri_javoblar} ta to'g'ri ({foiz}%)", reply_markup=asosiy_menyu, parse_mode="Markdown")
+                await message.answer(f"🏁 **Yakunlandi!**\nSizning Natijangiz: {togri_javoblar} ta to'g'ri ({foiz}%)", reply_markup=asosiy_menyu, parse_mode="Markdown")
                 return
             else:
-                await message.answer("⚠️ Test topilmadi.")
+                await message.answer("⚠️ Ushbu test topilmadi yoki muddati o'tgan.")
                 return
 
-    await message.answer("Salom! Usulni tanlang:", reply_markup=asosiy_menyu)
+    await message.answer("Assalomu alaykum! Xush kelibsiz.\nTest tuzish usulini tanlang:", reply_markup=asosiy_menyu)
 
 # --- ADMIN PANEL QISMI ---
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
-    await message.answer("👑 Admin panel", reply_markup=admin_menyu)
+    await message.answer("👑 **Admin Panelga Xush Kelibsiz!**", reply_markup=admin_menyu, parse_mode="Markdown")
 
 @dp.message(F.text == "🔙 Bosh menyu")
 async def back_to_main(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("Asosiy menyu.", reply_markup=asosiy_menyu)
+    await message.answer("Asosiy menyuga qaytdingiz.", reply_markup=asosiy_menyu)
 
-@dp.message(F.text == "📊 Statistika")
+@dp.message(F.text == "📊 Umumiy Statistika")
 async def show_stats(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     async with db_pool.acquire() as conn:
         users_count = await conn.fetchval("SELECT COUNT(*) FROM users")
         quizzes_count = await conn.fetchval("SELECT COUNT(*) FROM quizzes")
         
-    await message.answer(f"📊 **Statistika:**\n👥 Qatnashchilar: {users_count}\n📝 Testlar: {quizzes_count}", parse_mode="Markdown")
+    await message.answer(f"📊 **Loyiha Statistikasi:**\n👥 Qatnashchilar: {users_count} ta\n📝 Yaratilgan testlar: {quizzes_count} ta", parse_mode="Markdown")
 
-# --- YAngi: XABAR TARQATISH MANTIQI ---
+@dp.message(F.text == "🥇 To'liq ro'yxat (Profillar)")
+async def show_full_rating(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    async with db_pool.acquire() as conn:
+        # Konkurslar uchun eng zo'r 50 ta reyting profillari bilan chiqariladi
+        users = await conn.fetch("SELECT user_id, name, score FROM users ORDER BY score DESC LIMIT 50")
+        
+    text = "👑 **TOP-50 Ro'yxat (Profillar):**\nBarcha foydalanuvchilar ismining ustiga bosib, yutuq berish uchun ularning lichkasiga o'tishingiz mumkin.\n\n"
+    for i, u in enumerate(users, 1):
+        text += f"{i}. [{u['name']}](tg://user?id={u['user_id']}) — {u['score']} ball\n"
+        
+    await message.answer(text, parse_mode="Markdown")
+
 @dp.message(F.text == "📣 Xabar tarqatish")
 async def ask_broadcast_msg(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
-    await message.answer("Barcha foydalanuvchilarga yuboriladigan xabarni kiriting\n(Bekor qilish uchun '🔙 Bosh menyu' ni bosing):", reply_markup=admin_menyu)
+    await message.answer("Barcha foydalanuvchilarga yuboriladigan xabarni (rasm/matn) kiriting:", reply_markup=admin_menyu)
     await state.set_state(AdminState.xabar_kutish)
 
 @dp.message(AdminState.xabar_kutish)
@@ -298,23 +337,20 @@ async def send_broadcast_msg(message: types.Message, state: FSMContext):
         users = await conn.fetch("SELECT user_id FROM users")
     
     await message.answer("⏳ Xabar yuborilmoqda. Iltimos, kuting...")
-    success = 0
-    fail = 0
+    success, fail = 0, 0
     for u in users:
         try:
-            # copy_message matn, rasm yoki videoni aynan o'zidek qilib hammaga yetkazadi
             await bot.copy_message(chat_id=int(u['user_id']), from_chat_id=message.chat.id, message_id=message.message_id)
             success += 1
-            await asyncio.sleep(0.05) # Telegram bloklamasligi uchun tanaffus
+            await asyncio.sleep(0.05) 
         except Exception:
             fail += 1
     
-    await message.answer(f"✅ Tarqatish yakunlandi!\n\nYetib bordi: {success} ta\nYetib bormadi (botni bloklaganlar): {fail} ta", reply_markup=asosiy_menyu)
+    await message.answer(f"✅ Tarqatish yakunlandi!\n\nYetib bordi: {success} ta\nBloklaganlar: {fail} ta", reply_markup=asosiy_menyu)
     await state.clear()
 
-
 # --- MANTIQ QADAMLARI ---
-@dp.message(F.text.in_(["📄 Fayldan test tuzish", "✍️ Mavzudan test tuzish"]))
+@dp.message(F.text.in_(["📄 Fayldan test yasash", "🤖 AI Mavzudan yasash"]))
 async def usul_tanlash(message: types.Message, state: FSMContext):
     await state.update_data(msgs_to_delete=[]) 
     await track_msg(state, message.message_id) 
@@ -322,7 +358,7 @@ async def usul_tanlash(message: types.Message, state: FSMContext):
     usul = "fayl" if "Fayl" in message.text else "mavzu"
     await state.update_data(usul=usul)
     await state.set_state(QuizForm.daraja)
-    msg = await message.answer("Darajani tanlang:", reply_markup=daraja_menyu)
+    msg = await message.answer("Qiyinlik darajasini tanlang:", reply_markup=daraja_menyu)
     await track_msg(state, msg.message_id)
 
 @dp.message(QuizForm.daraja)
@@ -331,7 +367,7 @@ async def daraja_olish(message: types.Message, state: FSMContext):
     if "Oson" not in message.text and "O'rtacha" not in message.text and "Qiyin" not in message.text: return
     await state.update_data(daraja=message.text)
     await state.set_state(QuizForm.soni)
-    msg = await message.answer("Nechta savol?", reply_markup=soni_menyu)
+    msg = await message.answer("Nechta savol tuzamiz?", reply_markup=soni_menyu)
     await track_msg(state, msg.message_id)
 
 @dp.message(QuizForm.soni)
@@ -340,7 +376,7 @@ async def savol_sonini_olish(message: types.Message, state: FSMContext):
     if not message.text.isdigit(): return
     await state.update_data(soni=int(message.text))
     await state.set_state(QuizForm.vaqt)
-    msg = await message.answer("Vaqtni belgilang:", reply_markup=vaqt_menyu)
+    msg = await message.answer("Har bir savol uchun vaqt belgilang:", reply_markup=vaqt_menyu)
     await track_msg(state, msg.message_id)
 
 @dp.message(QuizForm.vaqt)
@@ -352,7 +388,7 @@ async def vaqtni_olish(message: types.Message, state: FSMContext):
     
     data = await state.get_data()
     await state.set_state(QuizForm.malumot)
-    javob = "Fayl yuboring." if data['usul'] == 'fayl' else "Mavzuni yozing:"
+    javob = "Ma'lumotli faylni (Word yoki PDF) yuboring." if data['usul'] == 'fayl' else "Mavzuni batafsil yozing:"
     msg = await message.answer(javob, reply_markup=bekor_menyu)
     await track_msg(state, msg.message_id)
 
@@ -364,7 +400,7 @@ async def mavzuni_qabul_qilish(message: types.Message, state: FSMContext):
     await delete_tracked_msgs(message.chat.id, state)
     wait_msg = await message.answer("🟢 AI test tuzmoqda...", reply_markup=ReplyKeyboardRemove())
     
-    daraja_toza = data['daraja'].split()[-1] 
+    daraja_toza = data['daraja'].split()[-2] if "ball" in data['daraja'] else data['daraja'].split()[-1]
     qoshimcha = "Mantiqiy o'ylashni talab qiladigan murakkab savollar tuzing. DIQQAT: Telegram qoidasiga ko'ra har bir javob varianti uzunligi 90 ta belgidan oshmasligi QAT'IY SHART. Javoblar qisqa, aniq va londa bo'lsin!" if daraja_toza == "Qiyin" else "DIQQAT: Telegram qoidasiga ko'ra har bir javob varianti uzunligi 90 ta belgidan oshmasligi qat'iy shart!"
     
     prompt = f"'{message.text}' bo'yicha {data['soni']} ta test tuz. Qiyinlik: {daraja_toza}. {qoshimcha} FAQAT JSON ro'yxat ber. Variantlarga A, B, C, D yozma!\nNamuna: [{{\"savol\": \"...\", \"variantlar\": [\"J1\", \"J2\", \"J3\", \"J4\"], \"togri_index\": 0}}]"
@@ -392,42 +428,25 @@ async def faylni_qabul_qilish(message: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        daraja_toza = data['daraja'].split()[-1] 
+        daraja_toza = data['daraja'].split()[-2] if "ball" in data['daraja'] else data['daraja'].split()[-1]
         qoshimcha = "Matn asosida chuqur mantiqiy o'ylashni talab qiladigan murakkab savollar tuzing. DIQQAT: Telegram qoidasiga ko'ra har bir javob varianti uzunligi 90 ta belgidan oshmasligi QAT'IY SHART. Javoblar qisqa va londa bo'lsin!" if daraja_toza == "Qiyin" else "DIQQAT: Telegram qoidasiga ko'ra har bir javob varianti uzunligi 90 ta belgidan oshmasligi qat'iy shart!"
 
         prompt = f"Matn asosida {data['soni']} ta test tuz. Qiyinlik: {daraja_toza}. {qoshimcha} FAQAT JSON ro'yxat ber. Variantlarga A, B, C, D yozma!\nNamuna: [{{\"savol\": \"...\", \"variantlar\": [\"J1\", \"J2\", \"J3\", \"J4\"], \"togri_index\": 0}}]\n\nMatn: {text[:8000]}"
         
         await wait_msg.delete()
-        wait_msg_new = await message.answer("🟢 AI test tuzmoqda...", reply_markup=ReplyKeyboardRemove())
+        wait_msg_new = await message.answer("🟢 AI test tuzmoqda. Bu bir necha soniya olishi mumkin...", reply_markup=ReplyKeyboardRemove())
         
         await generate_and_save(message, prompt, wait_msg_new, state, data['vaqt'], data['daraja'])
     except Exception as e:
-        print(f"Fayl xatosi: {e}")
+        await notify_admin("Fayldan test tuzish jarayoni", str(e))
         await wait_msg.delete()
-        await message.answer("❌ Xatolik yuz berdi.", reply_markup=asosiy_menyu)
+        await message.answer("❌ Xatolik yuz berdi. Iltimos, boshqa fayl kiritib ko'ring.", reply_markup=asosiy_menyu)
         await state.clear()
-
-@dp.poll_answer()
-async def handle_poll_answer(poll_answer: types.PollAnswer):
-    poll_id = poll_answer.poll_id
-    user_id_int = poll_answer.user.id
-    user_id_str = str(user_id_int)
-    tanlangan_javob = poll_answer.option_ids[0] if poll_answer.option_ids else -1
-
-    if poll_id in POLL_DATA:
-        if tanlangan_javob == POLL_DATA[poll_id]["correct"]:
-            ball = POLL_DATA[poll_id]["points"]
-            SESSION_SCORES[user_id_int] = SESSION_SCORES.get(user_id_int, 0) + 1
-            
-            async with db_pool.acquire() as conn:
-                await conn.execute("UPDATE users SET score = score + $1 WHERE user_id = $2", ball, user_id_str)
 
 async def generate_and_save(message: types.Message, prompt: str, wait_msg: types.Message, state: FSMContext, vaqt: int, daraja: str):
     try:
         response = await asyncio.to_thread(
-            model.generate_content, 
-            prompt, 
-            generation_config={"response_mime_type": "application/json"}
+            model.generate_content, prompt, generation_config={"response_mime_type": "application/json"}
         )
         savollar = json.loads(response.text)
         await wait_msg.delete()
@@ -446,19 +465,19 @@ async def generate_and_save(message: types.Message, prompt: str, wait_msg: types
 
         bot_info = await bot.get_me()
         test_link = f"https://t.me/{bot_info.username}?start={quiz_id}"
-        share_link = f"https://t.me/share/url?url={test_link}&text=Yangi test!"
+        share_link = f"https://t.me/share/url?url={test_link}&text=Yangi test tuzildi!"
         
         inline_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 Yechish", url=test_link), InlineKeyboardButton(text="🔗 Ulashish", url=share_link)],
-            [InlineKeyboardButton(text="📥 PDF yuklash", callback_data=f"pdf_{quiz_id}")]
+            [InlineKeyboardButton(text="🚀 Testni Yechish", url=test_link), InlineKeyboardButton(text="🔗 Ulashish", url=share_link)],
+            [InlineKeyboardButton(text="📥 PDF Hujjat Yuklash", callback_data=f"pdf_{quiz_id}")]
         ])
         
-        await message.answer("✅ Tayyor!", reply_markup=inline_kb)
+        await message.answer("✅ **Test muvaffaqiyatli tayyorlandi!**", reply_markup=inline_kb, parse_mode="Markdown")
         await state.clear()
     except Exception as e:
-        print(f"Gen xatosi: {e}")
+        await notify_admin("AI generatsiya / Saqlash", str(e))
         await wait_msg.delete()
-        await message.answer("⚠️ Test tuzishda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.", reply_markup=asosiy_menyu)
+        await message.answer("⚠️ Test tuzishda texnik xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.", reply_markup=asosiy_menyu)
         await state.clear()
 
 @dp.callback_query(F.data.startswith("pdf_"))
@@ -479,7 +498,10 @@ async def send_pdf(callback: types.CallbackQuery):
         savollar = json.loads(row['savollar']) if isinstance(row['savollar'], str) else row['savollar']
         file_name = f"/tmp/test_{quiz_id}.pdf"
         
-        await asyncio.to_thread(create_pdf_sync, quiz_id, savollar, file_name)
+        bot_info = await bot.get_me()
+        bot_uname = bot_info.username
+
+        await asyncio.to_thread(create_pdf_sync, quiz_id, savollar, file_name, bot_uname)
         
         pdf_file = FSInputFile(file_name)
         await bot.send_document(callback.message.chat.id, pdf_file, caption="📥 Marhamat, testning PDF varianti.")
@@ -488,13 +510,13 @@ async def send_pdf(callback: types.CallbackQuery):
         await wait_msg.delete()
 
     except Exception as e:
-        print(f"PDF xatolik: {e}")
-        await bot.send_message(callback.message.chat.id, f"⚠️ PDF yaratishda xatolik yuz berdi: {str(e)[:100]}")
+        await notify_admin("PDF yaratish", str(e))
+        await bot.send_message(callback.message.chat.id, f"⚠️ PDF yaratishda xatolik yuz berdi.")
 
 async def main():
     keep_alive()
     await init_db_pool()
-    print("🚀 QOTMAS BOT: PDF muammosi hal qilindi va Tarqatish qo'shildi!")
+    print("🚀 BOT ISHGA TUSHMQODA: Watermark, Reyting va Admin loglar qo'shildi!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
