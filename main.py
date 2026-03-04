@@ -180,15 +180,15 @@ daraja_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🟢 Oson (1 
 soni_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="5"), KeyboardButton(text="10"), KeyboardButton(text="15"), KeyboardButton(text="20")], bekor_tugma], resize_keyboard=True)
 vaqt_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="15 soniya"), KeyboardButton(text="30 soniya")], [KeyboardButton(text="60 soniya"), KeyboardButton(text="⏳ Cheklovsiz")], bekor_tugma], resize_keyboard=True)
 
-slayd_soni_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="5 ta slayd"), KeyboardButton(text="7 ta slayd"), KeyboardButton(text="10 ta slayd")], bekor_tugma], resize_keyboard=True)
+slayd_soni_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="7 ta slayd"), KeyboardButton(text="10 ta slayd"), KeyboardButton(text="15 ta slayd")], bekor_tugma], resize_keyboard=True)
 bekor_menyu = ReplyKeyboardMarkup(keyboard=[bekor_tugma], resize_keyboard=True)
 admin_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📊 Umumiy Statistika"), KeyboardButton(text="📣 Xabar tarqatish")], [KeyboardButton(text="🥇 To'liq ro'yxat (Profillar)")], [KeyboardButton(text="🔙 Bosh menyu")]], resize_keyboard=True)
 
 dizayn_inline = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="🔵 Zamonaviy (Ko'k)", callback_data="dizayn_kok")],
-        [InlineKeyboardButton(text="🟢 Tabiat (Yashil)", callback_data="dizayn_yashil")],
-        [InlineKeyboardButton(text="🟠 Rasmiy (Apelsin)", callback_data="dizayn_rasmiy")]
+        [InlineKeyboardButton(text="🔵 1-slayd", callback_data="dizayn_kok")],
+        [InlineKeyboardButton(text="🟢 2-slayd", callback_data="dizayn_yashil")],
+        [InlineKeyboardButton(text="🟠 3-slayd", callback_data="dizayn_rasmiy")]
     ]
 )
 
