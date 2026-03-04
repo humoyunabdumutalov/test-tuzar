@@ -8,6 +8,7 @@ import textwrap
 import asyncpg
 from contextlib import suppress
 import google.generativeai as genai
+from pptx.enum.text import MSO_AUTO_SIZE
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandObject
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
@@ -104,10 +105,8 @@ def create_pdf_sync(quiz_id, savollar, file_name, bot_username):
     pdf.output(file_name)
 
 def create_pptx_sync(slaydlar_json, file_name, dizayn_nomi):
-    # Shablon fayllarini chaqirish (template_kok.pptx, template_yashil.pptx, template_rasmiy.pptx)
     template_file = f"template_{dizayn_nomi}.pptx"
     
-    # Agar loyiha papkasida siz yasagan shablon bo'lsa, shuni ochadi. Yo'qsa standart oq fonli ochadi.
     if os.path.exists(template_file):
         prs = Presentation(template_file)
     else:
@@ -118,7 +117,6 @@ def create_pptx_sync(slaydlar_json, file_name, dizayn_nomi):
     slide = prs.slides.add_slide(title_slide_layout)
     title = slide.shapes.title
     
-    # Ba'zi shablonlarda taglavha (subtitle) bo'lmasligi mumkin, shuning uchun tekshiramiz
     if len(slide.placeholders) > 1:
         subtitle = slide.placeholders[1]
         subtitle.text = f"Art of Engineering AI tomonidan tayyorlandi"
@@ -135,21 +133,18 @@ def create_pptx_sync(slaydlar_json, file_name, dizayn_nomi):
         
         title_shape.text = data.get('sarlavha', 'Sarlavha')
         tf = body_shape.text_frame
-        tf.word_wrap = True  # Matnni ramkadan chiqarmaslik
         
-        # Slayddagi nuqtalar (bullet points) ni joylash
-        tf.clear() # Dastlabki bo'sh qatorni tozalash
+        # MANA SHU QISM MO'JIZA YARATADI:
+        tf.word_wrap = True 
+        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE # Matnni ramkaga avtomatik sig'dirish
+        
+        tf.clear() 
         qismlar = data.get('qismlar', [])
         for point in qismlar:
             p = tf.add_paragraph()
             p.text = point
             p.level = 0
-            
-            # Matn juda ko'p bo'lsa shriftni kichraytirish (sig'ishi uchun)
-            if len(point) > 100:
-                p.font.size = Pt(14)
-            else:
-                p.font.size = Pt(18)
+            # Endi qo'lda shriftni o'zgartirish shart emas, PowerPoint o'zi hal qiladi!
                 
     prs.save(file_name)
 
@@ -446,8 +441,8 @@ async def generate_slide_content(message: types.Message, state: FSMContext):
     QOIDALAR:
     1. Sarlavhalar sof, raqamlarsiz bo'lsin.
     2. Har bir slayd matni 4-5 ta batafsil nuqtadan (bullet-points) iborat bo'lsin.
-    3. HAR BIR NUQTA (point) maksimal 15-20 ta so'zdan oshmasin (ramkadan chiqib ketmasligi uchun).
-    4. FAQAT JSON array qaytar: [{{"sarlavha": "Mavzu nomi", "qismlar": ["1-qism", "2-qism", "3-qism"]}}]"""
+    3. Ma'lumotlar chuqur, ilmiy va keng qamrovli bo'lsin! Gaplarni qisqartirma.
+    4. FAQAT JSON array qaytar: [{{"sarlavha": "Mavzu nomi", "qismlar": ["Batafsil 1-qism...", "Batafsil 2-qism...", "Batafsil 3-qism..."]}}]"""
     
     try:
         response = await asyncio.to_thread(model.generate_content, prompt, generation_config={"response_mime_type": "application/json"})
