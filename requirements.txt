@@ -7,3 +7,4 @@ fpdf2
 asyncpg
 python-pptx
 Pillow==10.0.1
+python-dotenv
