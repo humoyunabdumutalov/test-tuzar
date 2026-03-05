@@ -106,44 +106,40 @@ def create_pdf_sync(quiz_id, savollar, file_name, bot_username):
 
 def create_pptx_sync(slaydlar_json, file_name, dizayn_nomi):
     template_file = f"template_{dizayn_nomi}.pptx"
+    prs = Presentation(template_file) if os.path.exists(template_file) else Presentation()
     
-    if os.path.exists(template_file):
-        prs = Presentation(template_file)
-    else:
-        prs = Presentation()
-    
-    # 1-Slayd (Sarlavha)
     title_slide_layout = prs.slide_layouts[0]
     slide = prs.slides.add_slide(title_slide_layout)
-    title = slide.shapes.title
-    
-    if len(slide.placeholders) > 1:
-        subtitle = slide.placeholders[1]
-        subtitle.text = f"Art of Engineering AI tomonidan tayyorlandi"
-    
-    title.text = "Sizning Taqdimotingiz"
+    slide.shapes.title.text = "Sizning Taqdimotingiz"
 
-    # Matnli slaydlar
+    # Matnli slaydlar dizayni
     bullet_slide_layout = prs.slide_layouts[1]
+    
     for data in slaydlar_json:
         slide = prs.slides.add_slide(bullet_slide_layout)
-        shapes = slide.shapes
-        title_shape = shapes.title
-        body_shape = shapes.placeholders[1]
         
-        title_shape.text = data.get('sarlavha', 'Sarlavha')
-        tf = body_shape.text_frame
-        
-        # MANA SHU QISM MO'JIZA YARATADI:
-        tf.word_wrap = True 
-        tf.clear() 
-        qismlar = data.get('qismlar', [])
-        for point in qismlar:
-            p = tf.add_paragraph()
-            p.text = point
-            p.level = 0
-            p.font.size = Pt(20)  # Slayd uchun eng ideal va chiroyli shrift o'lchami
-            # Endi qo'lda shriftni o'zgartirish shart emas, PowerPoint o'zi hal qiladi!
+        # Sarlavhani topish va yozish
+        title_shape = slide.shapes.title
+        if title_shape:
+            title_shape.text = data.get('sarlavha', 'Mavzu')
+            
+        # Canva andozasidan matn blokini aqlli qidirish
+        body_shape = None
+        for shape in slide.placeholders:
+            if shape != title_shape: # Sarlavhadan boshqa birinchi blokni olamiz
+                body_shape = shape
+                break
+                
+        if body_shape:
+            tf = body_shape.text_frame
+            tf.word_wrap = True
+            tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE # Sig'dirish mo'jizasi
+            tf.clear()
+            
+            for point in data.get('qismlar', []):
+                p = tf.add_paragraph()
+                p.text = point
+                p.level = 0
                 
     prs.save(file_name)
 
@@ -436,13 +432,11 @@ async def generate_slide_content(message: types.Message, state: FSMContext):
     dizayn = data['dizayn']
     mavzu = message.text
     
-    prompt = f"""Mavzu: '{mavzu}'. Shu mavzu bo'yicha {soni} ta slayd uchun professional taqdimot rejasi tuz.
+    prompt = f"""Mavzu: '{message.text}'. {data['soni']} ta slayd uchun chuqur va batafsil professional taqdimot rejasi tuz.
     QOIDALAR:
-    1. Sarlavhalar sof, raqamlarsiz bo'lsin.
-    2. Har bir slayd matni 4-5 ta QISQA va Londa nuqtadan (bullet-points) iborat bo'lsin.
-    3. HAR BIR NUQTA maksimal 10-15 ta so'zdan oshmasin! (Slayd uchun faqat asosiy kalit gaplarni yoz, insho yozma).
-    4. FAQAT JSON array qaytar: [{{"sarlavha": "Mavzu nomi", "qismlar": ["1-qisqa fikr", "2-qisqa fikr"]}}]"""
-    
+    1. Sarlavhalar sof bo'lsin, "1-slayd" kabi raqamlar yozilmasin.
+    2. Har bir slaydda 3-4 ta to'liq, mazmunli va tushunarli nuqtalar (bullet-points) bo'lsin. Fikrlarni qisqartirma.
+    3. FAQAT JSON array qaytar: [{{"sarlavha": "Mavzu", "qismlar": ["Batafsil 1-fikr", "Batafsil 2-fikr"]}}]"""
     try:
         response = await asyncio.to_thread(model.generate_content, prompt, generation_config={"response_mime_type": "application/json"})
         slaydlar_json = json.loads(response.text)
