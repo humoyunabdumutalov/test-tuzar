@@ -17,19 +17,18 @@ from aiogram.exceptions import TelegramBadRequest
 from fpdf import FPDF
 import PyPDF2
 from docx import Document
-from PIL import Image  # Rasmlarni o'qish uchun yangi kutubxona
+from PIL import Image
 from keep_alive import keep_alive
 
 # --- SOZLAMALAR ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-ADMIN_ID = 5031441892  # O'zingizning Telegram ID raqamingizni yozing
+ADMIN_ID = 5031441892  # <--- SHU YERGA O'Z ID RAQAMINGIZNI YOZISHNI UNUTMANG!
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 genai.configure(api_key=GEMINI_API_KEY)
-# Vision (rasm o'qish) uchun ham shu model ishlaydi
 model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
 # --- BAZA ---
@@ -99,7 +98,7 @@ def create_pdf_sync(quiz_id, savollar, file_name, bot_username):
 class QuizForm(StatesGroup):
     usul = State(); daraja = State(); soni = State(); vaqt = State(); malumot = State(); msgs_to_delete = State()
 
-class VocabForm(StatesGroup): # Rasm orqali test qilish uchun FSM
+class VocabForm(StatesGroup):
     soni = State(); vaqt = State(); rasm = State(); msgs_to_delete = State()
 
 class AdminState(StatesGroup):
@@ -108,13 +107,21 @@ class AdminState(StatesGroup):
 bekor_tugma = [KeyboardButton(text="🔙 Bekor qilish")]
 asosiy_menyu = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="📄 Fayldan test yasash"), KeyboardButton(text="🤖 AI Mavzudan yasash")],
-    [KeyboardButton(text="📸 Rasmdan lug'at testi")], # Yangi tugma
+    [KeyboardButton(text="📸 Rasmdan lug'at testi")],
     [KeyboardButton(text="🏆 Liderlar taxtasi"), KeyboardButton(text="👤 Mening profilim")],
     [KeyboardButton(text="ℹ️ Yordam va qoidalar")]
 ], resize_keyboard=True)
 
 daraja_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🟢 Oson (1 ball)"), KeyboardButton(text="🟡 O'rtacha (2 ball)")], [KeyboardButton(text="🔴 Qiyin (3 ball)")], bekor_tugma], resize_keyboard=True)
 soni_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="5"), KeyboardButton(text="10"), KeyboardButton(text="15"), KeyboardButton(text="20")], bekor_tugma], resize_keyboard=True)
+
+# Lug'at testi uchun maxsus katta menyu: 15, 20, 30, 35
+vocab_soni_menyu = ReplyKeyboardMarkup(keyboard=[
+    [KeyboardButton(text="15"), KeyboardButton(text="20")], 
+    [KeyboardButton(text="30"), KeyboardButton(text="35")], 
+    bekor_tugma
+], resize_keyboard=True)
+
 vaqt_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="15 soniya"), KeyboardButton(text="30 soniya")], [KeyboardButton(text="60 soniya"), KeyboardButton(text="⏳ Cheklovsiz")], bekor_tugma], resize_keyboard=True)
 admin_menyu = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📊 Umumiy Statistika"), KeyboardButton(text="📣 Xabar tarqatish")], [KeyboardButton(text="🥇 To'liq ro'yxat (Profillar)")], [KeyboardButton(text="🔙 Bosh menyu")]], resize_keyboard=True)
 bekor_menyu = ReplyKeyboardMarkup(keyboard=[bekor_tugma], resize_keyboard=True)
@@ -130,6 +137,58 @@ async def delete_tracked_msgs(chat_id: int, state: FSMContext):
     for msg_id in data.get('msgs_to_delete', []):
         with suppress(TelegramBadRequest): await bot.delete_message(chat_id, msg_id)
     await state.update_data(msgs_to_delete=[])
+
+# --- ADMIN PANEL (QAYTA QO'SHILDI) ---
+@dp.message(Command("admin"))
+async def admin_panel(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    await message.answer("👑 **Admin Panel**", reply_markup=admin_menyu, parse_mode="Markdown")
+
+@dp.message(F.text == "🔙 Bosh menyu")
+async def back_to_main(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Asosiy menyuga qaytdingiz.", reply_markup=asosiy_menyu)
+
+@dp.message(F.text == "📊 Umumiy Statistika")
+async def show_stats(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    async with db_pool.acquire() as conn:
+        users_count = await conn.fetchval("SELECT COUNT(*) FROM users")
+        quizzes_count = await conn.fetchval("SELECT COUNT(*) FROM quizzes")
+    await message.answer(f"📊 **Statistika:**\n👥 Foydalanuvchilar: {users_count}\n📝 Testlar: {quizzes_count}", parse_mode="Markdown")
+
+@dp.message(F.text == "🥇 To'liq ro'yxat (Profillar)")
+async def show_full_rating(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    async with db_pool.acquire() as conn:
+        users = await conn.fetch("SELECT user_id, name, score FROM users ORDER BY score DESC LIMIT 50")
+    text = "👑 **TOP-50:**\n\n"
+    for i, u in enumerate(users, 1): text += f"{i}. [{u['name']}](tg://user?id={u['user_id']}) — {u['score']} ball\n"
+    await message.answer(text, parse_mode="Markdown")
+
+@dp.message(F.text == "📣 Xabar tarqatish")
+async def ask_broadcast(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    await message.answer("Xabarni kiriting:", reply_markup=admin_menyu)
+    await state.set_state(AdminState.xabar_kutish)
+
+@dp.message(AdminState.xabar_kutish)
+async def send_broadcast(message: types.Message, state: FSMContext):
+    if message.text == "🔙 Bosh menyu":
+        await state.clear()
+        await message.answer("Bekor qilindi.", reply_markup=asosiy_menyu)
+        return
+    async with db_pool.acquire() as conn: users = await conn.fetch("SELECT user_id FROM users")
+    await message.answer("⏳ Xabar yuborilmoqda...")
+    success = 0
+    for u in users:
+        try:
+            await bot.copy_message(chat_id=int(u['user_id']), from_chat_id=message.chat.id, message_id=message.message_id)
+            success += 1
+            await asyncio.sleep(0.05) 
+        except Exception: pass
+    await message.answer(f"✅ Yetib bordi: {success} ta", reply_markup=asosiy_menyu)
+    await state.clear()
 
 # --- ASOSIY BUYRUQLAR ---
 @dp.message(Command("start"))
@@ -223,7 +282,8 @@ async def start_vocab_test(message: types.Message, state: FSMContext):
     await state.update_data(msgs_to_delete=[])
     await track_msg(state, message.message_id)
     await state.set_state(VocabForm.soni)
-    msg = await message.answer("Nechta savoldan iborat test tuzamiz?", reply_markup=soni_menyu)
+    # Bu yerda yangi katta menyu ishlatiladi
+    msg = await message.answer("Nechta savoldan iborat test tuzamiz?", reply_markup=vocab_soni_menyu)
     await track_msg(state, msg.message_id)
 
 @dp.message(VocabForm.soni)
@@ -242,7 +302,7 @@ async def vocab_vaqt(message: types.Message, state: FSMContext):
     vaqt = 0 if "Cheklovsiz" in matn else int(matn.split()[0])
     await state.update_data(vaqt=vaqt)
     await state.set_state(VocabForm.rasm)
-    msg = await message.answer("📸 Endi lug'at daftaringiz yoki so'zlar ro'yxati tushirilgan rasmni yuboring:", reply_markup=bekor_menyu)
+    msg = await message.answer("📸 Endi lug'at daftaringiz yoki kitobdagi so'zlar ro'yxati tushirilgan rasmni yuboring:", reply_markup=bekor_menyu)
     await track_msg(state, msg.message_id)
 
 @dp.message(VocabForm.rasm, F.photo)
@@ -252,7 +312,6 @@ async def vocab_rasm_qabul(message: types.Message, state: FSMContext):
     wait_msg = await message.answer("👁 AI rasmni o'qimoqda va test tuzmoqda...", reply_markup=ReplyKeyboardRemove())
     
     try:
-        # Rasmni yuklab olish
         photo = message.photo[-1]
         file_info = await bot.get_file(photo.file_id)
         file_data = io.BytesIO()
@@ -260,7 +319,6 @@ async def vocab_rasm_qabul(message: types.Message, state: FSMContext):
         file_data.seek(0)
         img = Image.open(file_data)
         
-        # AI ga topshiriq (Prompt)
         prompt = f"""Ushbu rasmdagi xorijiy so'zlarni va ularning tarjimalarini diqqat bilan o'qi. 
         Shu so'zlar asosida {data['soni']} ta savoldan iborat test tuz. 
         Har bir savolda so'z berilib, uning to'g'ri tarjimasini topish so'ralsin. Variantlar 4 ta bo'lsin.
@@ -269,7 +327,6 @@ async def vocab_rasm_qabul(message: types.Message, state: FSMContext):
         response = await asyncio.to_thread(model.generate_content, [prompt, img], generation_config={"response_mime_type": "application/json"})
         savollar = json.loads(response.text)
         
-        # Testni saqlash va yuborish
         await wait_msg.delete()
         for data_q in savollar:
             eski_index = int(data_q.get('togri_index', 0))
@@ -279,14 +336,13 @@ async def vocab_rasm_qabul(message: types.Message, state: FSMContext):
             data_q['togri_index'] = data_q['variantlar'].index(togri_javob_matni)
             
         quiz_id = str(uuid.uuid4())[:8]
-        # Lug'at testlari standart O'rtacha (2 ball) hisoblanadi
         async with db_pool.acquire() as conn:
             await conn.execute("INSERT INTO quizzes (quiz_id, vaqt, daraja, savollar) VALUES ($1, $2, $3, $4)", quiz_id, data['vaqt'], "O'rtacha", json.dumps(savollar))
             
         bot_info = await bot.get_me()
         test_link = f"https://t.me/{bot_info.username}?start={quiz_id}"
         inline_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 Testni boshlash", url=test_link)]])
-        await message.answer("✅ **Lug'at testingiz tayyor!**\nRasmdagi so'zlar qanchalik yodda qolganini sinab ko'ring.", reply_markup=inline_kb, parse_mode="Markdown")
+        await message.answer(f"✅ **Lug'at testingiz tayyor! ({len(savollar)} ta savol)**\nRasmdagi so'zlar qanchalik yodda qolganini sinab ko'ring.", reply_markup=inline_kb, parse_mode="Markdown")
         await state.clear()
         
     except Exception as e:
