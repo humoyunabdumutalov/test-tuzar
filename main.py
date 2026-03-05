@@ -6,7 +6,7 @@ import uuid
 import random
 from contextlib import suppress
 
-# --- QO'SHIMCHA KUTUBXONALAR ---
+# --- QO'SHIMCHA KUTUBXONALAR --
 from dotenv import load_dotenv
 # Seyfni (.env) ochamiz, bu qator eng birinchi ishlashi shart
 load_dotenv() 
