@@ -32,7 +32,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # DIQQAT: O'zingizning Telegram ID raqamingizni shu yerga yozing!
-ADMIN_ID = 5031441892  
+ADMIN_ID = 5031441892 
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -368,7 +368,9 @@ async def auto_topic_handler(message: types.Message, state: FSMContext):
 @dp.message(QuickQuizForm.soni)
 async def generate_magic(message: types.Message, state: FSMContext):
     """Sun'iy intellekt orqali testni generatsiya qilish qismi"""
-    if not message.text.isdigit(): 
+    # XATO Yozishdan himoya: Agar matn bo'lmasa yoki raqam bo'lmasa, qaytaradi
+    if not message.text or not message.text.isdigit(): 
+        await message.answer("⚠️ Iltimos, faqat raqam kiriting (Masalan: 15) yoki pastdagi tugmalardan birini tanlang.", reply_markup=soni_menyu)
         return
         
     soni = int(message.text)
@@ -492,15 +494,26 @@ async def main():
     # Serverni uyg'oq tutuvchi tizim (Render.com uchun)
     keep_alive()
     
-    # Bazani ishga tushirish
-    await init_db_pool()
+    try:
+        # Bazani ishga tushirish
+        print("⏳ Bazaga ulanilmoqda...")
+        await init_db_pool()
+        print("✅ Baza muvaffaqiyatli ulandi!")
+    except Exception as e:
+        print(f"❌ BAZAGA ULANISHDA XATOLIK YUZ BERDI: {e}")
+        print("ILTIMOS RENDER'DAGI DATABASE_URL TO'G'RI EKANLIGINI TEKSHIRING!")
     
     print("========================================")
     print("🚀 UPPERLAR MVP BOTI ISHGA TUSHDI!")
     print("========================================")
     
-    # Botni ishga tushirish
-    await dp.start_polling(bot)
+    try:
+        # Eski qotib qolgan xabarlarni tozalash (Bot tiqilib qolmasligi uchun muhim!)
+        await bot.delete_webhook(drop_pending_updates=True)
+        # Botni ishga tushirish
+        await dp.start_polling(bot)
+    except Exception as e:
+        print(f"❌ BOT MOTORINI ISHGA TUSHIRISHDA XATOLIK: {e}")
 
 if __name__ == "__main__": 
     asyncio.run(main())
