@@ -29,7 +29,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-ADMIN_ID = 5031441892  # <--- O'ZINGIZNING TELEGRAM ID RAQAMINGIZNI SHU YERGA YOZING!
+ADMIN_ID = 5031441892  # <--- DIQQAT: O'ZINGIZNING TELEGRAM ID RAQAMINGIZNI SHU YERGA YOZING!
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -45,14 +45,23 @@ async def init_db_pool():
     global db_pool
     db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=5, max_size=20, statement_cache_size=0)
     async with db_pool.acquire() as conn:
+        # 1. Asosiy jadvallarni yaratish
         await conn.execute('''CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY, name TEXT, score INTEGER DEFAULT 0, tests_taken INTEGER DEFAULT 0)''')
-        await conn.execute('''CREATE TABLE IF NOT EXISTS quizzes (quiz_id TEXT PRIMARY KEY, source_type TEXT, savollar TEXT)''')
+        await conn.execute('''CREATE TABLE IF NOT EXISTS quizzes (quiz_id TEXT PRIMARY KEY, savollar TEXT)''')
+        
+        # 2. Users jadvalini yangilash
         columns_to_add = ["image_tests_made", "file_tests_made", "topic_tests_made"]
         for col in columns_to_add:
             try:
                 await conn.execute(f"ALTER TABLE users ADD COLUMN {col} INTEGER DEFAULT 0")
             except Exception:
                 pass
+                
+        # 3. Quizzes jadvalidagi XATONI TO'G'IRLASH
+        try:
+            await conn.execute("ALTER TABLE quizzes ADD COLUMN source_type TEXT")
+        except Exception:
+            pass
 
 async def add_user(user_id, name):
     async with db_pool.acquire() as conn:
@@ -103,6 +112,7 @@ asosiy_menyu = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="📊 Mening natijalarim"), KeyboardButton(text="🏆 Reyting")]
 ], resize_keyboard=True)
 
+# Savollar soni 15, 20, 25, 30 qilib belgilandi
 soni_menyu = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="15"), KeyboardButton(text="20")], 
     [KeyboardButton(text="25"), KeyboardButton(text="30")], 
@@ -242,9 +252,11 @@ async def auto_doc_handler(message: types.Message, state: FSMContext):
     await state.set_state(QuickQuizForm.soni)
     await message.answer("📄 Fayl qabul qilindi! Nechta savol tuzamiz?", reply_markup=soni_menyu)
 
+# MAVZU QABUL QILISH (Raqamlardan himoyalangan)
 @dp.message(StateFilter(None), F.text, ~F.text.in_(["📸 Rasmdan test", "📚 Matn/Mavzudan test", "📊 Mening natijalarim", "🏆 Reyting", "🔙 Bekor qilish", "/start", "/admin"]))
 async def auto_topic_handler(message: types.Message, state: FSMContext):
-    if message.text.isdigit(): return
+    if message.text.isdigit(): 
+        return # Raqamlarni mavzu deb qabul qilmaydi
     await state.update_data(source_type='topic', payload=message.text)
     await state.set_state(QuickQuizForm.soni)
     await message.answer("🧠 Mavzu qabul qilindi! Nechta savol tuzamiz?", reply_markup=soni_menyu)
@@ -329,11 +341,11 @@ async def main():
         return
         
     print("========================================")
-    print("🚀 UPPERLAR MVP BOTI ISHGA TUSHDI!")
+    print("🚀 BOT ISHGA TUSHDI!")
     print("========================================")
     
     try:
-        # Tiqilib qolgan xabarlarni blokdan chiqarish
+        # Tiqilib qolgan xabarlarni tozalash (Bot qotib qolmasligi uchun)
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     except Exception as e:
