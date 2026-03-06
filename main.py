@@ -39,7 +39,7 @@ dp = Dispatcher()
 
 # Gemini sun'iy intellektini sozlash
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash-lite')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 # --- DATA ENGINE (Ma'lumotlar bazasi) ---
 db_pool = None
@@ -92,10 +92,13 @@ SESSION_SCORES = {}
 # --- YORDAMCHI FUNKSIYALAR ---
 def clean_json_text(text):
     """Sun'iy intellekt javobidan faqat toza JSON matnini qirqib olish"""
-    if "```json" in text:
-        text = text.split("```json")[1]
-    if "```" in text:
-        text = text.split("```")[0]
+    try:
+        start = text.find('[')
+        end = text.rfind(']')
+        if start != -1 and end != -1:
+            return text[start:end+1]
+    except Exception:
+        pass
     return text.strip()
 
 def read_file_sync(file_data, filename):
@@ -132,8 +135,8 @@ asosiy_menyu = ReplyKeyboardMarkup(keyboard=[
 ], resize_keyboard=True)
 
 soni_menyu = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="5"), KeyboardButton(text="10")], 
     [KeyboardButton(text="15"), KeyboardButton(text="20")], 
+    [KeyboardButton(text="25"), KeyboardButton(text="30")], 
     bekor_tugma
 ], resize_keyboard=True)
 
@@ -355,6 +358,9 @@ async def auto_doc_handler(message: types.Message, state: FSMContext):
 @dp.message(StateFilter(None), F.text, ~F.text.in_(["📸 Rasmdan test", "📚 Matn/Mavzudan test", "📊 Mening natijalarim", "🏆 Reyting", "🔙 Bekor qilish", "/start", "/admin"]))
 async def auto_topic_handler(message: types.Message, state: FSMContext):
     """Oddiy matn yuborilganda avtomatik ishga tushadi"""
+    if message.text.isdigit():
+        return # Raqamlarni mavzu deb qabul qilishdan qat'iy himoya
+        
     await state.update_data(source_type='topic', payload=message.text)
     await state.set_state(QuickQuizForm.soni)
     await message.answer("🧠 Mavzu qabul qilindi! Nechta savol tuzamiz?", reply_markup=soni_menyu)
@@ -378,12 +384,12 @@ async def generate_magic(message: types.Message, state: FSMContext):
             file_data = io.BytesIO()
             await bot.download_file(file_info.file_path, destination=file_data)
             file_data.seek(0)
-            img = Image.open(file_data)
+            img = Image.open(file_data).convert("RGB")
             
             prompt = (
-                f"Rasmdagi chet tili so'zlarini o'qib, ularning tarjimasi bo'yicha {soni} ta test tuz. "
+                f"Rasmdagi barcha yozuvlarni, matnlarni yoki so'zlarni diqqat bilan o'qib, shunga doir {soni} ta test tuz. "
                 f"FAQAT QAT'IY JSON ARRAY formatida qaytar. Hech qanday qo'shimcha gap qo'shma. "
-                f"Namuna: [{{\"savol\": \"Apple so'zining tarjimasi?\", \"variantlar\": [\"Olma\", \"Nok\", \"Uzum\", \"Anor\"], \"togri_index\": 0}}]"
+                f"Namuna: [{{\"savol\": \"Rasmdagi ma'lumotlarga ko'ra...\", \"variantlar\": [\"A variant\", \"B variant\", \"C variant\", \"D variant\"], \"togri_index\": 0}}]"
             )
             response = await asyncio.to_thread(model.generate_content, [prompt, img])
             
