@@ -39,7 +39,7 @@ dp = Dispatcher()
 
 # Gemini sun'iy intellektini sozlash
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
 # --- DATA ENGINE (Ma'lumotlar bazasi) ---
 db_pool = None
