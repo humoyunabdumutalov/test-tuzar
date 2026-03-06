@@ -6,7 +6,7 @@ import uuid
 import random
 from contextlib import suppress
 
-# --- QO'SHIMCHA KUTUBXONALAR --
+# --- QO'SHIMCHA KUTUBXONALAR ---
 from dotenv import load_dotenv
 # Seyfni (.env) ochamiz, bu qator eng birinchi ishlashi shart
 load_dotenv() 
@@ -14,7 +14,8 @@ load_dotenv()
 import asyncpg
 import google.generativeai as genai
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command, CommandObject
+# 1-O'ZGARISH: Shu qatorga "StateFilter" so'zini qo'shib qo'yasiz:
+from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -350,8 +351,8 @@ async def auto_doc_handler(message: types.Message, state: FSMContext):
     await state.set_state(QuickQuizForm.soni)
     await message.answer("📄 Fayl qabul qilindi! Nechta savol tuzamiz?", reply_markup=soni_menyu)
 
-# Boshqa menyu buyruqlari bo'lmagan har qanday oddiy matnni mavzu deb qabul qiladi
-@dp.message(F.text, ~F.text.in_(["📸 Rasmdan test", "📚 Matn/Mavzudan test", "📊 Mening natijalarim", "🏆 Reyting", "🔙 Bekor qilish", "/start", "/admin"]))
+# 2-O'ZGARISH: F.text dan oldin "StateFilter(None)," qoidasini qo'shasiz:
+@dp.message(StateFilter(None), F.text, ~F.text.in_(["📸 Rasmdan test", "📚 Matn/Mavzudan test", "📊 Mening natijalarim", "🏆 Reyting", "🔙 Bekor qilish", "/start", "/admin"]))
 async def auto_topic_handler(message: types.Message, state: FSMContext):
     """Oddiy matn yuborilganda avtomatik ishga tushadi"""
     await state.update_data(source_type='topic', payload=message.text)
