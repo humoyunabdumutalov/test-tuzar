@@ -34,7 +34,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
 # --- DATA ENGINE (Ma'lumotlar bazasi) ---
 db_pool = None
@@ -63,7 +63,7 @@ async def add_user(user_id, name):
 
 POLL_DATA = {}   
 SESSION_SCORES = {} 
-USER_EVENTS = {} # YANGI: Foydalanuvchi javob berganini kutuvchi tizim
+USER_EVENTS = {}
 
 # --- YORDAMCHI FUNKSIYALAR ---
 def clean_json_text(text):
@@ -115,12 +115,13 @@ vaqt_menyu = ReplyKeyboardMarkup(keyboard=[
     bekor_tugma
 ], resize_keyboard=True)
 
+# YANGILIK: Admin menyusiga yangi tugma qo'shildi
 admin_menyu = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="📊 Umumiy Statistika"), KeyboardButton(text="📣 Xabar tarqatish")],
-    [KeyboardButton(text="🔙 Bosh menyu")]
+    [KeyboardButton(text="📊 Umumiy Statistika"), KeyboardButton(text="👥 Foydalanuvchilar")],
+    [KeyboardButton(text="📣 Xabar tarqatish"), KeyboardButton(text="🔙 Bosh menyu")]
 ], resize_keyboard=True)
 
-# --- FAYL YUKLAB OLISH ---
+# --- FAYL YUKLAB OLISH (Word) ---
 @dp.callback_query(F.data.startswith("down_"))
 async def download_doc(call: types.CallbackQuery):
     quiz_id = call.data.split("_")[1]
@@ -169,6 +170,34 @@ async def show_stats_admin(message: types.Message):
         topic_tests = await conn.fetchval("SELECT SUM(topic_tests_made) FROM users") or 0
     text = f"📊 **STARTAP STATISTIKASI:**\n\n👥 Jami a'zolar: {users_count} ta\n📝 Yaratilgan testlar: {quizzes_count} ta\n\n📈 **Tahlil:**\n📸 Rasmdan: {image_tests} marta\n📄 Fayldan: {file_tests} marta\n🧠 Mavzudan: {topic_tests} marta"
     await message.answer(text, parse_mode="Markdown")
+
+# YANGILIK: Foydalanuvchilar ro'yxatini shakllantirish va yuborish
+@dp.message(F.text == "👥 Foydalanuvchilar")
+async def get_users_list(message: types.Message):
+    if message.from_user.id != int(ADMIN_ID): return
+    
+    wait_msg = await message.answer("⏳ Ro'yxat yuklanmoqda...")
+    async with db_pool.acquire() as conn:
+        # COALESCE qilingan, null bo'lsa 0 oladi
+        users = await conn.fetch("SELECT user_id, name, COALESCE(score, 0) as score, tests_taken FROM users ORDER BY score DESC")
+        
+    if not users:
+        return await wait_msg.edit_text("Bazada hali foydalanuvchilar yo'q.")
+        
+    text_content = "TESTTUZAR - FOYDALANUVCHILAR RO'YXATI\n=========================================\n\n"
+    for i, u in enumerate(users, 1):
+        ism = u['name'] if u['name'] else "Noma'lum"
+        text_content += f"{i}. Ism: {ism} | ID: {u['user_id']} | Ball: {u['score']} | Yechilgan testlar: {u['tests_taken']}\n"
+        
+    file_stream = io.BytesIO(text_content.encode('utf-8'))
+    document = BufferedInputFile(file_stream.read(), filename="foydalanuvchilar.txt")
+    
+    await wait_msg.delete()
+    await bot.send_document(
+        chat_id=message.chat.id, 
+        document=document, 
+        caption=f"👥 Jami: {len(users)} ta a'zo.\nTo'liq ro'yxatni fayldan ko'rishingiz mumkin."
+    )
 
 @dp.message(F.text == "📣 Xabar tarqatish")
 async def ask_broadcast(message: types.Message, state: FSMContext):
@@ -222,7 +251,6 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                 savollar = json.loads(quiz_row['savollar'])
                 SESSION_SCORES[message.from_user.id] = 0 
                 
-                # YANGI: Foydalanuvchi uchun kutish signalini yaratamiz
                 USER_EVENTS[message.from_user.id] = asyncio.Event()
                 
                 for i, data in enumerate(savollar, 1):
@@ -241,15 +269,13 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                     )
                     POLL_DATA[sent_poll.poll.id] = {"correct": correct, "points": 2}
                     
-                    # YANGI: Keyingi savolga o'tishni kutish (Aqlli taymer)
                     USER_EVENTS[message.from_user.id].clear()
                     try:
-                        # Javob berishini yoki vaqt tugashini kutadi
                         await asyncio.wait_for(USER_EVENTS[message.from_user.id].wait(), timeout=taymer)
                     except asyncio.TimeoutError:
-                        pass # Vaqt tugadi, keyingisiga o'tadi
+                        pass
                         
-                    await asyncio.sleep(0.5) # Savollar orasidagi qisqa tanaffus
+                    await asyncio.sleep(0.5)
                     
                 await message.answer("🏁 **Barcha savollar yuborildi!** Natijalaringizni reytingdan ko'rishingiz mumkin.", reply_markup=asosiy_menyu, parse_mode="Markdown")
                 return
@@ -266,28 +292,31 @@ async def handle_poll_answer(poll_answer: types.PollAnswer):
     if poll_id in POLL_DATA and tanlangan_javob == POLL_DATA[poll_id]["correct"]:
         ball = POLL_DATA[poll_id]["points"]
         async with db_pool.acquire() as conn:
-            await conn.execute("UPDATE users SET score = score + $1 WHERE user_id = $2", ball, str(user_id_int))
+            await conn.execute("UPDATE users SET score = COALESCE(score, 0) + $1 WHERE user_id = $2", ball, str(user_id_int))
             
-    # YANGI: Foydalanuvchi javob belgilasa, darhol keyingi savolga o'tish uchun signal yuboramiz
     if user_id_int in USER_EVENTS:
         USER_EVENTS[user_id_int].set()
 
 @dp.message(F.text == "📊 Mening natijalarim")
 async def show_profile(message: types.Message):
     async with db_pool.acquire() as conn:
-        u = await conn.fetchrow("SELECT score, tests_taken, image_tests_made, file_tests_made FROM users WHERE user_id = $1", str(message.from_user.id))
+        u = await conn.fetchrow("SELECT COALESCE(score, 0) as score, tests_taken, image_tests_made, file_tests_made FROM users WHERE user_id = $1", str(message.from_user.id))
     if u: 
         text = f"📊 **Shaxsiy Statistika:**\n🎯 Yig'ilgan ball: {u['score']}\n✅ Yechilgan testlar: {u['tests_taken']}\n\n🛠 **Siz yaratgan testlar:**\n📸 Rasmdan: {u['image_tests_made']} ta\n📄 Fayldan: {u['file_tests_made']} ta"
         await message.answer(text, parse_mode="Markdown")
     else: 
         await message.answer("Siz hali bazada yo'qsiz. /start ni bosing.")
 
+# YANGILIK: Reytingdagi "None" xatoligi yopildi
 @dp.message(F.text == "🏆 Reyting")
 async def show_reyting(message: types.Message):
     async with db_pool.acquire() as conn:
-        top_users = await conn.fetch("SELECT name, score FROM users ORDER BY score DESC LIMIT 10")
+        # COALESCE qilingan, null o'rniga doim raqam chiqadi
+        top_users = await conn.fetch("SELECT name, COALESCE(score, 0) as score FROM users ORDER BY score DESC LIMIT 10")
     text = "🏆 **TOP-10 QAHRAMONLAR:**\n\n"
-    for i, u in enumerate(top_users, 1): text += f"{i}. {u['name']} — {u['score']} ball\n"
+    for i, u in enumerate(top_users, 1): 
+        ism = u['name'] if u['name'] else "A'zo"
+        text += f"{i}. {ism} — {u['score']} ball\n"
     await message.answer(text, parse_mode="Markdown")
 
 # --- 1-CLICK TEST TIZIMI ---
