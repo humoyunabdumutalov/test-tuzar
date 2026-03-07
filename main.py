@@ -54,7 +54,6 @@ async def init_db_pool():
         try: await conn.execute("ALTER TABLE quizzes ADD COLUMN source_type TEXT")
         except Exception: pass
         
-        # Yangi qo'shilgan: Vaqtni saqlash uchun ustun
         try: await conn.execute("ALTER TABLE quizzes ADD COLUMN timer INTEGER DEFAULT 45")
         except Exception: pass
 
@@ -64,6 +63,7 @@ async def add_user(user_id, name):
 
 POLL_DATA = {}   
 SESSION_SCORES = {} 
+USER_EVENTS = {} # YANGI: Foydalanuvchi javob berganini kutuvchi tizim
 
 # --- YORDAMCHI FUNKSIYALAR ---
 def clean_json_text(text):
@@ -90,7 +90,7 @@ def read_file_sync(file_data, filename):
 class QuickQuizForm(StatesGroup):
     source_type = State()
     soni = State()
-    vaqt = State() # YANGI: Vaqtni saqlash qadami
+    vaqt = State()
     payload = State()
 
 class AdminState(StatesGroup):
@@ -109,7 +109,6 @@ soni_menyu = ReplyKeyboardMarkup(keyboard=[
     bekor_tugma
 ], resize_keyboard=True)
 
-# YANGI: Vaqtni tanlash menyusi
 vaqt_menyu = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="15 soniya"), KeyboardButton(text="30 soniya")], 
     [KeyboardButton(text="45 soniya"), KeyboardButton(text="60 soniya")], 
@@ -140,9 +139,7 @@ async def download_doc(call: types.CallbackQuery):
         for j, opt in enumerate(q['variantlar']):
             pref = ["A)", "B)", "C)", "D)"][j]
             doc.add_paragraph(f"   {pref} {opt}")
-            # To'g'ri javobni bold qilish olib tashlandi!
             
-    # YANGILIK: Hujjat oxiriga javoblar kaliti qo'shiladi
     doc.add_heading("Javoblar kaliti:", level=2)
     kalit_matni = " | ".join([f"{i}-" + ["A", "B", "C", "D"][q['togri_index']] for i, q in enumerate(savollar, 1)])
     doc.add_paragraph(kalit_matni)
@@ -216,15 +213,20 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
         quiz_id = command.args
         async with db_pool.acquire() as conn:
             quiz_row = await conn.fetchrow("SELECT savollar, timer FROM quizzes WHERE quiz_id = $1", quiz_id)
+            
             if quiz_row:
                 await conn.execute("UPDATE users SET tests_taken = tests_taken + 1 WHERE user_id = $1", str(message.from_user.id))
-                taymer = quiz_row.get('timer') or 45 # Bazadan vaqtni o'qib olamiz
+                taymer = quiz_row.get('timer') or 45 
                 
                 await message.answer(f"🚀 Test boshlanmoqda... (Taymer: {taymer} soniya)", reply_markup=ReplyKeyboardRemove())
                 savollar = json.loads(quiz_row['savollar'])
                 SESSION_SCORES[message.from_user.id] = 0 
-                for data in savollar:
-                    q = data['savol'][:250]
+                
+                # YANGI: Foydalanuvchi uchun kutish signalini yaratamiz
+                USER_EVENTS[message.from_user.id] = asyncio.Event()
+                
+                for i, data in enumerate(savollar, 1):
+                    q = f"[{i}/{len(savollar)}] {data['savol'][:200]}"
                     opts = [str(opt)[:100] for opt in data['variantlar']][:4]
                     correct = int(data.get('togri_index', 0))
                     
@@ -235,11 +237,21 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                         type='quiz', 
                         correct_option_id=correct, 
                         is_anonymous=False,
-                        open_period=taymer # Foydalanuvchi tanlagan vaqt qo'yiladi
+                        open_period=taymer
                     )
                     POLL_DATA[sent_poll.poll.id] = {"correct": correct, "points": 2}
-                    await asyncio.sleep(0.5)
-                await message.answer("🏁 **Barcha savollar yuborildi!**", reply_markup=asosiy_menyu, parse_mode="Markdown")
+                    
+                    # YANGI: Keyingi savolga o'tishni kutish (Aqlli taymer)
+                    USER_EVENTS[message.from_user.id].clear()
+                    try:
+                        # Javob berishini yoki vaqt tugashini kutadi
+                        await asyncio.wait_for(USER_EVENTS[message.from_user.id].wait(), timeout=taymer)
+                    except asyncio.TimeoutError:
+                        pass # Vaqt tugadi, keyingisiga o'tadi
+                        
+                    await asyncio.sleep(0.5) # Savollar orasidagi qisqa tanaffus
+                    
+                await message.answer("🏁 **Barcha savollar yuborildi!** Natijalaringizni reytingdan ko'rishingiz mumkin.", reply_markup=asosiy_menyu, parse_mode="Markdown")
                 return
             else:
                 return await message.answer("⚠️ Bu test eskirgan yoki topilmadi.", reply_markup=asosiy_menyu)
@@ -250,10 +262,15 @@ async def handle_poll_answer(poll_answer: types.PollAnswer):
     poll_id = poll_answer.poll_id
     user_id_int = poll_answer.user.id
     tanlangan_javob = poll_answer.option_ids[0] if poll_answer.option_ids else -1
+    
     if poll_id in POLL_DATA and tanlangan_javob == POLL_DATA[poll_id]["correct"]:
         ball = POLL_DATA[poll_id]["points"]
         async with db_pool.acquire() as conn:
             await conn.execute("UPDATE users SET score = score + $1 WHERE user_id = $2", ball, str(user_id_int))
+            
+    # YANGI: Foydalanuvchi javob belgilasa, darhol keyingi savolga o'tish uchun signal yuboramiz
+    if user_id_int in USER_EVENTS:
+        USER_EVENTS[user_id_int].set()
 
 @dp.message(F.text == "📊 Mening natijalarim")
 async def show_profile(message: types.Message):
@@ -300,7 +317,6 @@ async def auto_topic_handler(message: types.Message, state: FSMContext):
     await state.set_state(QuickQuizForm.soni)
     await message.answer("🧠 Mavzu qabul qilindi! Nechta savol tuzamiz?", reply_markup=soni_menyu)
 
-# YANGI: Savollar soni tanlangandan keyin vaqt so'raymiz
 @dp.message(QuickQuizForm.soni)
 async def ask_timer_handler(message: types.Message, state: FSMContext):
     if not message.text or not message.text.isdigit(): 
@@ -310,7 +326,6 @@ async def ask_timer_handler(message: types.Message, state: FSMContext):
     await state.set_state(QuickQuizForm.vaqt)
     await message.answer("⏱ Har bir savol uchun qancha vaqt ajratamiz?", reply_markup=vaqt_menyu)
 
-# YANGI: Vaqt tanlangandan keyin AI ni ishga tushiramiz
 @dp.message(QuickQuizForm.vaqt)
 async def generate_magic(message: types.Message, state: FSMContext):
     vaqt_matni = message.text.replace("soniya", "").strip()
@@ -359,7 +374,6 @@ async def generate_magic(message: types.Message, state: FSMContext):
 
         quiz_id = str(uuid.uuid4())[:8]
         async with db_pool.acquire() as conn:
-            # YANGI: timer qiymati ham bazaga yozilmoqda
             await conn.execute("INSERT INTO quizzes (quiz_id, source_type, savollar, timer) VALUES ($1, $2, $3, $4)", quiz_id, source, json.dumps(savollar), tanlangan_vaqt)
             if source == 'image': await conn.execute("UPDATE users SET image_tests_made = image_tests_made + 1 WHERE user_id = $1", str(message.from_user.id))
             elif source == 'file': await conn.execute("UPDATE users SET file_tests_made = file_tests_made + 1 WHERE user_id = $1", str(message.from_user.id))
