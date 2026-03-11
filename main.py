@@ -56,7 +56,6 @@ async def init_db_pool():
         try: await conn.execute("ALTER TABLE quizzes ADD COLUMN timer INTEGER DEFAULT 45")
         except Exception: pass
         
-        # YANGILIK: Telefon raqami uchun ustun
         try: await conn.execute("ALTER TABLE users ADD COLUMN phone_number TEXT")
         except Exception: pass
 
@@ -93,8 +92,10 @@ def read_file_sync(file_data, filename):
 class QuickQuizForm(StatesGroup):
     source_type = State()
     soni = State()
+    til = State() # YANGI: Tilni saqlash uchun
     vaqt = State()
     payload = State()
+    filename = State()
 
 class AdminState(StatesGroup):
     xabar_kutish = State()
@@ -110,7 +111,6 @@ asosiy_menyu = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="💬 Taklif va Xatolar")]
 ], resize_keyboard=True)
 
-# YANGI: Ixtiyoriy raqam so'rash menyusi
 ixtiyoriy_raqam_menyu = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="📱 Raqamni ulashish", request_contact=True)],
     [KeyboardButton(text="➡️ Asosiy menyuga o'tish")]
@@ -119,6 +119,12 @@ ixtiyoriy_raqam_menyu = ReplyKeyboardMarkup(keyboard=[
 soni_menyu = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="15"), KeyboardButton(text="20")], 
     [KeyboardButton(text="25"), KeyboardButton(text="30")], 
+    bekor_tugma
+], resize_keyboard=True)
+
+# YANGI: Til tanlash menyusi
+til_menyu = ReplyKeyboardMarkup(keyboard=[
+    [KeyboardButton(text="🇺🇿 O'zbek tili"), KeyboardButton(text="🇬🇧 English")],
     bekor_tugma
 ], resize_keyboard=True)
 
@@ -159,7 +165,6 @@ async def receive_feedback(message: types.Message, state: FSMContext):
         await state.clear()
         return await message.answer("Bekor qilindi.", reply_markup=asosiy_menyu)
 
-    # YANGILIK: Admin xabarida profili bosiladigan havola qilingan
     admin_text = f"📬 **YANGI XABAR (Taklif/Xato)**\n👤 Kimdan: [{message.from_user.full_name}](tg://user?id={message.from_user.id})\n🆔 ID: `{message.from_user.id}`\n\n💬 Matn: {message.text}"
     try:
         await bot.send_message(ADMIN_ID, admin_text, parse_mode="Markdown")
@@ -246,7 +251,6 @@ async def admin_panel(message: types.Message):
     if message.from_user.id != int(ADMIN_ID): return
     await message.answer("👑 **Admin Panelga Xush Kelibsiz!**", reply_markup=admin_menyu, parse_mode="Markdown")
 
-# YANGILIK: Qidiruv orqali to'g'ridan-to'g'ri profilga o'tish buyrug'i
 @dp.message(Command("profil"))
 async def admin_get_profile(message: types.Message, command: CommandObject):
     if message.from_user.id != int(ADMIN_ID): return
@@ -374,8 +378,14 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
             else:
                 return await message.answer("⚠️ Bu test eskirgan yoki topilmadi.", reply_markup=asosiy_menyu)
                 
-    # YANGILIK: Start bosganda ixtiyoriy raqam so'rash
-    await message.answer("Assalomu alaykum! EdTech platformamizga xush kelibsiz.\n\n⚙️ Tizimdan qulayroq foydalanish va natijalaringizni saqlash uchun telefon raqamingizni ulashishingiz mumkin (Majburiy emas):", reply_markup=ixtiyoriy_raqam_menyu)
+    # YANGILIK: Bazadan raqamni tekshirish
+    async with db_pool.acquire() as conn:
+        user_record = await conn.fetchrow("SELECT phone_number FROM users WHERE user_id = $1", str(message.from_user.id))
+    
+    if user_record and user_record['phone_number']:
+        await message.answer("Assalomu alaykum! EdTech platformamizga xush kelibsiz.\n\n📸 Shunchaki daftaringizni rasmga oling, PDF fayl yuboring yoki mavzu yozing!", reply_markup=asosiy_menyu)
+    else:
+        await message.answer("Assalomu alaykum! EdTech platformamizga xush kelibsiz.\n\n⚙️ Tizimdan qulayroq foydalanish uchun telefon raqamingizni ulashishingiz mumkin (Majburiy emas):", reply_markup=ixtiyoriy_raqam_menyu)
 
 @dp.poll_answer()
 async def handle_poll_answer(poll_answer: types.PollAnswer):
@@ -431,7 +441,7 @@ async def auto_doc_handler(message: types.Message, state: FSMContext):
     await state.set_state(QuickQuizForm.soni)
     await message.answer("📄 Fayl qabul qilindi! Nechta savol tuzamiz?", reply_markup=soni_menyu)
 
-@dp.message(StateFilter(None), F.text, ~F.text.in_(["📸 Rasmdan test", "📚 Matn/Mavzudan test", "📊 Mening natijalarim", "🏆 Reyting", "🔙 Bekor qilish", "/start", "/admin", "💬 Taklif va Xatolar", "➡️ Asosiy menyuga o'tish"]))
+@dp.message(StateFilter(None), F.text, ~F.text.in_(["📸 Rasmdan test", "📚 Matn/Mavzudan test", "📊 Mening natijalarim", "🏆 Reyting", "🔙 Bekor qilish", "/start", "/admin", "💬 Taklif va Xatolar", "➡️ Asosiy menyuga o'tish", "🇺🇿 O'zbek tili", "🇬🇧 English"]))
 async def auto_topic_handler(message: types.Message, state: FSMContext):
     if message.text.isdigit(): return
     await state.update_data(source_type='topic', payload=message.text)
@@ -439,25 +449,38 @@ async def auto_topic_handler(message: types.Message, state: FSMContext):
     await message.answer("🧠 Mavzu qabul qilindi! Nechta savol tuzamiz?", reply_markup=soni_menyu)
 
 @dp.message(QuickQuizForm.soni)
-async def ask_timer_handler(message: types.Message, state: FSMContext):
+async def ask_lang_handler(message: types.Message, state: FSMContext):
     if not message.text or not message.text.isdigit(): 
         return await message.answer("⚠️ Iltimos, pastdagi tugmalardan sonni tanlang.", reply_markup=soni_menyu)
         
     await state.update_data(soni=int(message.text))
+    await state.set_state(QuickQuizForm.til) 
+    await message.answer("🌐 Qaysi tilda test tuzamiz?", reply_markup=til_menyu)
+
+@dp.message(QuickQuizForm.til)
+async def ask_timer_handler(message: types.Message, state: FSMContext):
+    tanlangan_til = message.text
+    if tanlangan_til not in ["🇺🇿 O'zbek tili", "🇬🇧 English"]:
+        return await message.answer("⚠️ Iltimos, pastdagi tugmalardan tilni tanlang.", reply_markup=til_menyu)
+        
+    til_nomi = "Uzbek" if tanlangan_til == "🇺🇿 O'zbek tili" else "English"
+    await state.update_data(til=til_nomi)
     await state.set_state(QuickQuizForm.vaqt)
     await message.answer("⏱ Har bir savol uchun qancha vaqt ajratamiz?", reply_markup=vaqt_menyu)
 
 @dp.message(QuickQuizForm.vaqt)
 async def generate_magic(message: types.Message, state: FSMContext):
     vaqt_matni = message.text.replace("soniya", "").strip()
-    if not vaqt_matni.isdigit(): return await message.answer("⚠️ Iltimos, pastdagi tugmalardan vaqtni tanlang.", reply_markup=vaqt_menyu)
+    if not vaqt_matni.isdigit(): return await message.answer("⚠️ Iltimos, tugmalardan vaqtni tanlang.", reply_markup=vaqt_menyu)
         
     tanlangan_vaqt = int(vaqt_matni)
     data = await state.get_data()
-    soni, source = data['soni'], data['source_type']
+    soni, source, til_nomi = data['soni'], data['source_type'], data['til']
     
     wait_msg = await message.answer("⚙️ Sun'iy intellekt tahlil qilmoqda... Kuting.", reply_markup=ReplyKeyboardRemove())
     
+    qatiy_buyruq = f"DIQQAT: Vazifang faqat va faqat berilgan matn/mavzu doirasida {soni} ta test tuzish. Mavzudan umuman tashqariga chiqma. Test tili: {til_nomi}. Agar matnda yetarli ma'lumot bo'lmasa, o'zingdan to'qima. FAQAT JSON ARRAY qaytar. Namuna: [{{\"savol\": \"...\", \"variantlar\": [\"A\", \"B\", \"C\", \"D\"], \"togri_index\": 0}}]"
+
     try:
         if source == 'image':
             file_info = await bot.get_file(data['payload'])
@@ -465,7 +488,7 @@ async def generate_magic(message: types.Message, state: FSMContext):
             await bot.download_file(file_info.file_path, destination=file_data)
             file_data.seek(0)
             img = Image.open(file_data).convert("RGB")
-            prompt = f"Rasmdagi matnlarni diqqat bilan o'qib, shunga doir {soni} ta test tuz. FAQAT JSON ARRAY qaytar. Namuna: [{{\"savol\": \"...\", \"variantlar\": [\"A\", \"B\", \"C\", \"D\"], \"togri_index\": 0}}]"
+            prompt = f"{qatiy_buyruq}\nRasmdagi matnlarni diqqat bilan o'qib, shunga doir test tuz."
             response = await asyncio.to_thread(model.generate_content, [prompt, img])
             
         elif source == 'file':
@@ -473,12 +496,12 @@ async def generate_magic(message: types.Message, state: FSMContext):
             file_data = io.BytesIO()
             await bot.download_file(file_info.file_path, destination=file_data)
             file_data.seek(0)
-            text = await asyncio.to_thread(read_file_sync, file_data, data['filename'])
-            prompt = f"Matn asosida {soni} ta test tuz. FAQAT JSON ARRAY. Namuna: [{{\"savol\": \"...\", \"variantlar\": [\"1\", \"2\", \"3\", \"4\"], \"togri_index\": 0}}]\n\nMatn: {text[:15000]}"
+            text = await asyncio.to_thread(read_file_sync, file_data, data.get('filename', ''))
+            prompt = f"{qatiy_buyruq}\n\nMatn: {text[:15000]}"
             response = await asyncio.to_thread(model.generate_content, prompt)
             
         elif source == 'topic':
-            prompt = f"'{data['payload']}' mavzusida {soni} ta test tuz. FAQAT JSON ARRAY. Namuna: [{{\"savol\": \"...\", \"variantlar\": [\"1\", \"2\", \"3\", \"4\"], \"togri_index\": 0}}]"
+            prompt = f"{qatiy_buyruq}\n\nMavzu: '{data['payload']}'"
             response = await asyncio.to_thread(model.generate_content, prompt)
 
         json_matn = clean_json_text(response.text)
@@ -500,7 +523,6 @@ async def generate_magic(message: types.Message, state: FSMContext):
 
         bot_info = await bot.get_me()
         test_link = f"https://t.me/{bot_info.username}?start={quiz_id}"
-        share_link = f"https://t.me/share/url?url={test_link}&text=Ajoyib test yaratildi! Bilimingizni sinab ko'ring."
         
         inline_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Testni boshlash", url=test_link)], 
@@ -516,7 +538,7 @@ async def generate_magic(message: types.Message, state: FSMContext):
     except Exception as e:
         with suppress(Exception): await wait_msg.delete()
         print(f"XATOLIK YUZ BERDI: {e}") 
-        await message.answer("⚠️ Sun'iy intellekt xato qildi. Boshqatdan urinib ko'ring.", reply_markup=asosiy_menyu)
+        await message.answer("⚠️ Sun'iy intellekt xato qildi yoki savol tuza olmadi. Boshqatdan urinib ko'ring.", reply_markup=asosiy_menyu)
         await state.clear()
 
 
