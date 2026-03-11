@@ -92,7 +92,7 @@ def read_file_sync(file_data, filename):
 class QuickQuizForm(StatesGroup):
     source_type = State()
     soni = State()
-    til = State() # YANGI: Tilni saqlash uchun
+    til = State()
     vaqt = State()
     payload = State()
     filename = State()
@@ -122,9 +122,10 @@ soni_menyu = ReplyKeyboardMarkup(keyboard=[
     bekor_tugma
 ], resize_keyboard=True)
 
-# YANGI: Til tanlash menyusi
+# YANGILANGAN: 3 xil til menyusi
 til_menyu = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="🇺🇿 O'zbek tili"), KeyboardButton(text="🇬🇧 English")],
+    [KeyboardButton(text="🇺🇿 O'zbek tili"), KeyboardButton(text="🇷🇺 Русский")],
+    [KeyboardButton(text="🇬🇧 English")],
     bekor_tugma
 ], resize_keyboard=True)
 
@@ -378,7 +379,6 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
             else:
                 return await message.answer("⚠️ Bu test eskirgan yoki topilmadi.", reply_markup=asosiy_menyu)
                 
-    # YANGILIK: Bazadan raqamni tekshirish
     async with db_pool.acquire() as conn:
         user_record = await conn.fetchrow("SELECT phone_number FROM users WHERE user_id = $1", str(message.from_user.id))
     
@@ -441,7 +441,8 @@ async def auto_doc_handler(message: types.Message, state: FSMContext):
     await state.set_state(QuickQuizForm.soni)
     await message.answer("📄 Fayl qabul qilindi! Nechta savol tuzamiz?", reply_markup=soni_menyu)
 
-@dp.message(StateFilter(None), F.text, ~F.text.in_(["📸 Rasmdan test", "📚 Matn/Mavzudan test", "📊 Mening natijalarim", "🏆 Reyting", "🔙 Bekor qilish", "/start", "/admin", "💬 Taklif va Xatolar", "➡️ Asosiy menyuga o'tish", "🇺🇿 O'zbek tili", "🇬🇧 English"]))
+# YANGILANGAN: Rus tili filtri qo'shildi
+@dp.message(StateFilter(None), F.text, ~F.text.in_(["📸 Rasmdan test", "📚 Matn/Mavzudan test", "📊 Mening natijalarim", "🏆 Reyting", "🔙 Bekor qilish", "/start", "/admin", "💬 Taklif va Xatolar", "➡️ Asosiy menyuga o'tish", "🇺🇿 O'zbek tili", "🇷🇺 Русский", "🇬🇧 English"]))
 async def auto_topic_handler(message: types.Message, state: FSMContext):
     if message.text.isdigit(): return
     await state.update_data(source_type='topic', payload=message.text)
@@ -457,13 +458,20 @@ async def ask_lang_handler(message: types.Message, state: FSMContext):
     await state.set_state(QuickQuizForm.til) 
     await message.answer("🌐 Qaysi tilda test tuzamiz?", reply_markup=til_menyu)
 
+# YANGILANGAN: Rus tilini qabul qilish mantig'i
 @dp.message(QuickQuizForm.til)
 async def ask_timer_handler(message: types.Message, state: FSMContext):
     tanlangan_til = message.text
-    if tanlangan_til not in ["🇺🇿 O'zbek tili", "🇬🇧 English"]:
+    if tanlangan_til not in ["🇺🇿 O'zbek tili", "🇷🇺 Русский", "🇬🇧 English"]:
         return await message.answer("⚠️ Iltimos, pastdagi tugmalardan tilni tanlang.", reply_markup=til_menyu)
         
-    til_nomi = "Uzbek" if tanlangan_til == "🇺🇿 O'zbek tili" else "English"
+    if tanlangan_til == "🇺🇿 O'zbek tili":
+        til_nomi = "Uzbek"
+    elif tanlangan_til == "🇷🇺 Русский":
+        til_nomi = "Russian"
+    else:
+        til_nomi = "English"
+        
     await state.update_data(til=til_nomi)
     await state.set_state(QuickQuizForm.vaqt)
     await message.answer("⏱ Har bir savol uchun qancha vaqt ajratamiz?", reply_markup=vaqt_menyu)
