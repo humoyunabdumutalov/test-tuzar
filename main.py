@@ -34,7 +34,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash-lite')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 # --- DATA ENGINE (Ma'lumotlar bazasi) ---
 db_pool = None
@@ -59,6 +59,10 @@ async def init_db_pool():
         try: await conn.execute("ALTER TABLE users ADD COLUMN phone_number TEXT")
         except Exception: pass
 
+        # YANGILIK: Foydalanuvchi qo'shilgan vaqtni saqlash ustuni
+        try: await conn.execute("ALTER TABLE users ADD COLUMN joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        except Exception: pass
+
 async def add_user(user_id, name):
     async with db_pool.acquire() as conn:
         await conn.execute("INSERT INTO users (user_id, name) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING", str(user_id), name)
@@ -66,6 +70,7 @@ async def add_user(user_id, name):
 POLL_DATA = {}   
 SESSION_SCORES = {} 
 USER_EVENTS = {}
+ACTIVE_TESTS = {} # YANGILIK: Faol testlarni nazorat qilish uchun
 
 # --- YORDAMCHI FUNKSIYALAR ---
 def clean_json_text(text):
@@ -122,7 +127,6 @@ soni_menyu = ReplyKeyboardMarkup(keyboard=[
     bekor_tugma
 ], resize_keyboard=True)
 
-# YANGILANGAN: 3 xil til menyusi
 til_menyu = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="🇺🇿 O'zbek tili"), KeyboardButton(text="🇷🇺 Русский")],
     [KeyboardButton(text="🇬🇧 English")],
@@ -203,10 +207,15 @@ async def group_quiz_start(message: types.Message, command: CommandObject):
     taymer = quiz_row.get('timer') or 45
     savollar = json.loads(quiz_row['savollar'])
 
-    await message.answer(f"🚀 **Guruh testi boshlanmoqda!**\nJami savollar: {len(savollar)} ta\nHar bir savolga: {taymer} soniya\n\nTayyor turing!", parse_mode="Markdown")
+    await message.answer(f"🚀 **Guruh testi boshlanmoqda!**\nJami savollar: {len(savollar)} ta\nHar bir savolga: {taymer} soniya\nTo'xtatish uchun /stop bosing.\n\nTayyor turing!", parse_mode="Markdown")
     await asyncio.sleep(3) 
 
+    ACTIVE_TESTS[message.chat.id] = True # Test boshlanganini belgilaymiz
+    
     for i, data in enumerate(savollar, 1):
+        if not ACTIVE_TESTS.get(message.chat.id, True):
+            break # Agar /stop bosilgan bo'lsa tsikldan chiqamiz
+
         q = f"[{i}/{len(savollar)}] {data['savol'][:200]}"
         opts = [str(opt)[:100] for opt in data['variantlar']][:4]
         correct = int(data.get('togri_index', 0))
@@ -215,7 +224,8 @@ async def group_quiz_start(message: types.Message, command: CommandObject):
         POLL_DATA[sent_poll.poll.id] = {"correct": correct, "points": 2}
         await asyncio.sleep(taymer + 1)
 
-    await message.answer("🏁 **Guruh testi yakunlandi!** Barcha ishtirokchilarga faollik uchun rahmat.", parse_mode="Markdown")
+    ACTIVE_TESTS[message.chat.id] = False
+    await message.answer("🏁 **Guruh testi yakunlandi!**", parse_mode="Markdown")
 
 
 # --- FAYL YUKLAB OLISH ---
@@ -292,17 +302,19 @@ async def show_stats_admin(message: types.Message):
 async def get_users_list(message: types.Message):
     if message.from_user.id != int(ADMIN_ID): return
     wait_msg = await message.answer("⏳ Ro'yxat yuklanmoqda...")
+    # YANGILIK: ORDER BY joined_at ASC - birinchi qo'shilganlar oldin chiqadi
     async with db_pool.acquire() as conn:
-        users = await conn.fetch("SELECT user_id, name, phone_number, COALESCE(score, 0) as score, tests_taken FROM users ORDER BY score DESC")
+        users = await conn.fetch("SELECT user_id, name, phone_number, COALESCE(score, 0) as score, tests_taken FROM users ORDER BY joined_at ASC")
     if not users: return await wait_msg.edit_text("Bazada hali foydalanuvchilar yo'q.")
-    text_content = "TESTTUZAR - FOYDALANUVCHILAR RO'YXATI\n=========================================\n\n"
+    
+    text_content = "TESTTUZAR - FOYDALANUVCHILAR RO'YXATI (Eng eskilari birinchi)\n============================================================\n\n"
     for i, u in enumerate(users, 1):
         tel = f" | Tel: {u['phone_number']}" if u.get('phone_number') else ""
         text_content += f"{i}. Ism: {u['name'] or 'Noma`lum'} | ID: {u['user_id']}{tel} | Ball: {u['score']} | Testlar: {u['tests_taken']}\n"
     file_stream = io.BytesIO(text_content.encode('utf-8'))
-    document = BufferedInputFile(file_stream.read(), filename="foydalanuvchilar.txt")
+    document = BufferedInputFile(file_stream.read(), filename="foydalanuvchilar_royxati.txt")
     await wait_msg.delete()
-    await bot.send_document(chat_id=message.chat.id, document=document, caption=f"👥 Jami: {len(users)} ta a'zo.")
+    await bot.send_document(chat_id=message.chat.id, document=document, caption=f"👥 Jami: {len(users)} ta a'zo ro'yxati.")
 
 @dp.message(F.text == "📣 Xabar tarqatish")
 async def ask_broadcast(message: types.Message, state: FSMContext):
@@ -339,6 +351,28 @@ async def bekor_qilish(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("❌ Jarayon bekor qilindi.", reply_markup=asosiy_menyu)
 
+# YANGILIK: /stop buyrug'i uchun maxsus funksiya
+@dp.message(Command("stop"))
+async def stop_quiz_command(message: types.Message):
+    stopped = False
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
+    if ACTIVE_TESTS.get(chat_id):
+        ACTIVE_TESTS[chat_id] = False
+        stopped = True
+        
+    if ACTIVE_TESTS.get(user_id):
+        ACTIVE_TESTS[user_id] = False
+        if user_id in USER_EVENTS:
+            USER_EVENTS[user_id].set() # Taymerni tezkor kesish uchun
+        stopped = True
+        
+    if stopped:
+        await message.answer("🛑 Test muvaffaqiyatli to'xtatildi!", reply_markup=asosiy_menyu)
+    else:
+        await message.answer("⚠️ Hozirda faol test mavjud emas.", reply_markup=asosiy_menyu)
+
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext, command: CommandObject = None):
     await state.clear()
@@ -353,12 +387,16 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                 await conn.execute("UPDATE users SET tests_taken = tests_taken + 1 WHERE user_id = $1", str(message.from_user.id))
                 taymer = quiz_row.get('timer') or 45 
                 
-                await message.answer(f"🚀 Test boshlanmoqda... (Taymer: {taymer} soniya)", reply_markup=ReplyKeyboardRemove())
+                await message.answer(f"🚀 Test boshlanmoqda... (Taymer: {taymer} soniya)\nTo'xtatish uchun istalgan vaqtda /stop ni bosing.", reply_markup=ReplyKeyboardRemove())
                 savollar = json.loads(quiz_row['savollar'])
                 SESSION_SCORES[message.from_user.id] = 0 
                 USER_EVENTS[message.from_user.id] = asyncio.Event()
+                ACTIVE_TESTS[message.from_user.id] = True # Test boshlandi
                 
                 for i, data in enumerate(savollar, 1):
+                    if not ACTIVE_TESTS.get(message.from_user.id, True):
+                        break # /stop bosilsa tsikldan uziladi
+
                     q = f"[{i}/{len(savollar)}] {data['savol'][:200]}"
                     opts = [str(opt)[:100] for opt in data['variantlar']][:4]
                     correct = int(data.get('togri_index', 0))
@@ -374,7 +412,8 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                     except asyncio.TimeoutError: pass
                     await asyncio.sleep(0.5)
                     
-                await message.answer("🏁 **Barcha savollar yuborildi!**", reply_markup=asosiy_menyu, parse_mode="Markdown")
+                ACTIVE_TESTS[message.from_user.id] = False
+                await message.answer("🏁 **Test yakuniga yetdi!**", reply_markup=asosiy_menyu, parse_mode="Markdown")
                 return
             else:
                 return await message.answer("⚠️ Bu test eskirgan yoki topilmadi.", reply_markup=asosiy_menyu)
@@ -441,8 +480,7 @@ async def auto_doc_handler(message: types.Message, state: FSMContext):
     await state.set_state(QuickQuizForm.soni)
     await message.answer("📄 Fayl qabul qilindi! Nechta savol tuzamiz?", reply_markup=soni_menyu)
 
-# YANGILANGAN: Rus tili filtri qo'shildi
-@dp.message(StateFilter(None), F.text, ~F.text.in_(["📸 Rasmdan test", "📚 Matn/Mavzudan test", "📊 Mening natijalarim", "🏆 Reyting", "🔙 Bekor qilish", "/start", "/admin", "💬 Taklif va Xatolar", "➡️ Asosiy menyuga o'tish", "🇺🇿 O'zbek tili", "🇷🇺 Русский", "🇬🇧 English"]))
+@dp.message(StateFilter(None), F.text, ~F.text.in_(["📸 Rasmdan test", "📚 Matn/Mavzudan test", "📊 Mening natijalarim", "🏆 Reyting", "🔙 Bekor qilish", "/start", "/stop", "/admin", "💬 Taklif va Xatolar", "➡️ Asosiy menyuga o'tish", "🇺🇿 O'zbek tili", "🇷🇺 Русский", "🇬🇧 English"]))
 async def auto_topic_handler(message: types.Message, state: FSMContext):
     if message.text.isdigit(): return
     await state.update_data(source_type='topic', payload=message.text)
@@ -458,7 +496,6 @@ async def ask_lang_handler(message: types.Message, state: FSMContext):
     await state.set_state(QuickQuizForm.til) 
     await message.answer("🌐 Qaysi tilda test tuzamiz?", reply_markup=til_menyu)
 
-# YANGILANGAN: Rus tilini qabul qilish mantig'i
 @dp.message(QuickQuizForm.til)
 async def ask_timer_handler(message: types.Message, state: FSMContext):
     tanlangan_til = message.text
