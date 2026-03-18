@@ -160,35 +160,48 @@ async def skip_contact_handler(message: types.Message):
 # --- TAKLIF VA XATOLAR TIZIMI (FEEDBACK) ---
 @dp.message(F.text == "💬 Taklif va Xatolar")
 async def ask_feedback(message: types.Message, state: FSMContext):
-    await message.answer("✍️ Bot bo'yicha qanday taklifingiz yoki topgan xatoligingiz bor? Marhamat, yozib yuboring:", reply_markup=ReplyKeyboardMarkup(keyboard=[bekor_tugma], resize_keyboard=True))
+    await message.answer("✍️ Bot bo'yicha qanday taklifingiz yoki topgan xatoligingiz bor? Marhamat, (matn, rasm, video yoki stiker) yuboring:", reply_markup=ReplyKeyboardMarkup(keyboard=[bekor_tugma], resize_keyboard=True))
     await state.set_state(FeedbackState.kutish)
 
+# YANGILANGAN: Har qanday turdagi xabarni qabul qiladi
 @dp.message(FeedbackState.kutish)
 async def receive_feedback(message: types.Message, state: FSMContext):
     if message.text == "🔙 Bekor qilish":
         await state.clear()
         return await message.answer("Bekor qilindi.", reply_markup=asosiy_menyu)
 
-    admin_text = f"📬 **YANGI XABAR (Taklif/Xato)**\n👤 Kimdan: [{message.from_user.full_name}](tg://user?id={message.from_user.id})\n🆔 ID: `{message.from_user.id}`\n\n💬 Matn: {message.text}"
     try:
-        await bot.send_message(ADMIN_ID, admin_text, parse_mode="Markdown")
+        # 1. Adminga kimdan kelganini bildirish uchun pasport (ID) yuboramiz
+        info_text = f"📬 **YANGI XABAR (Taklif/Xato)**\n👤 Kimdan: [{message.from_user.full_name}](tg://user?id={message.from_user.id})\n🆔 ID: `{message.from_user.id}`"
+        await bot.send_message(ADMIN_ID, info_text, parse_mode="Markdown")
+        
+        # 2. Foydalanuvchi nima yuborgan bo'lsa (Stiker, Rasm, Matn), xuddi o'shani adminga nusxalaymiz
+        await bot.copy_message(chat_id=ADMIN_ID, from_chat_id=message.chat.id, message_id=message.message_id)
+        
         await message.answer("✅ Xabaringiz adminga muvaffaqiyatli yetkazildi! Fikringiz uchun rahmat.", reply_markup=asosiy_menyu)
     except Exception:
         await message.answer("⚠️ Adminga xabar yuborishda xatolik yuz berdi.", reply_markup=asosiy_menyu)
     await state.clear()
 
+# YANGILANGAN: Admin har qanday formatda (hatto voice yoki rasm) javob yozishi mumkin
 @dp.message(F.reply_to_message)
 async def admin_reply_handler(message: types.Message):
     if message.from_user.id != int(ADMIN_ID): return
+    
+    # Biz faqat ID yozilgan matnga qilingan reply'ni qabul qilamiz
     original_text = message.reply_to_message.text
-    if "🆔 ID:" in original_text:
-        try:
-            target_id = original_text.split("🆔 ID: ")[1].split("\n")[0].strip('`')
-            await bot.send_message(chat_id=target_id, text=f"👨‍💻 **Admindan javob:**\n\n{message.text}", parse_mode="Markdown")
-            await message.answer("✅ Javobingiz foydalanuvchiga yuborildi!")
-        except Exception as e:
-            await message.answer(f"⚠️ Yuborishda xatolik: {e}")
-
+    if not original_text or "🆔 ID:" not in original_text: return
+    
+    try:
+        target_id = original_text.split("🆔 ID: ")[1].split("\n")[0].strip('`')
+        
+        await bot.send_message(chat_id=target_id, text="👨‍💻 **Admindan javob:**", parse_mode="Markdown")
+        # Admin nima yuborsa (stiker, voice, matn), foydalanuvchiga shuni nusxalab beramiz
+        await bot.copy_message(chat_id=target_id, from_chat_id=message.chat.id, message_id=message.message_id)
+        
+        await message.answer("✅ Javobingiz foydalanuvchiga yuborildi!")
+    except Exception as e:
+        await message.answer(f"⚠️ Yuborishda xatolik: {e}")
 
 # --- GURUHLARDA JONLI TEST (GROUP MODE) ---
 @dp.message(Command("quiz"))
