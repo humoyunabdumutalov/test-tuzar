@@ -28,7 +28,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-ADMIN_ID = 5031441892  # <--- DIQQAT: O'ZINGIZNING TELEGRAM ID RAQAMINGIZNI SHU YERGA YOZING!
+ADMIN_ID = 0  # <--- DIQQAT: O'ZINGIZNING TELEGRAM ID RAQAMINGIZNI SHU YERGA YOZING!
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -59,7 +59,6 @@ async def init_db_pool():
         try: await conn.execute("ALTER TABLE users ADD COLUMN phone_number TEXT")
         except Exception: pass
 
-        # YANGILIK: Foydalanuvchi qo'shilgan vaqtni saqlash ustuni
         try: await conn.execute("ALTER TABLE users ADD COLUMN joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
         except Exception: pass
 
@@ -70,7 +69,7 @@ async def add_user(user_id, name):
 POLL_DATA = {}   
 SESSION_SCORES = {} 
 USER_EVENTS = {}
-ACTIVE_TESTS = {} # YANGILIK: Faol testlarni nazorat qilish uchun
+ACTIVE_TESTS = {}
 
 # --- YORDAMCHI FUNKSIYALAR ---
 def clean_json_text(text):
@@ -210,11 +209,11 @@ async def group_quiz_start(message: types.Message, command: CommandObject):
     await message.answer(f"🚀 **Guruh testi boshlanmoqda!**\nJami savollar: {len(savollar)} ta\nHar bir savolga: {taymer} soniya\nTo'xtatish uchun /stop bosing.\n\nTayyor turing!", parse_mode="Markdown")
     await asyncio.sleep(3) 
 
-    ACTIVE_TESTS[message.chat.id] = True # Test boshlanganini belgilaymiz
+    ACTIVE_TESTS[message.chat.id] = True 
     
     for i, data in enumerate(savollar, 1):
         if not ACTIVE_TESTS.get(message.chat.id, True):
-            break # Agar /stop bosilgan bo'lsa tsikldan chiqamiz
+            break 
 
         q = f"[{i}/{len(savollar)}] {data['savol'][:200]}"
         opts = [str(opt)[:100] for opt in data['variantlar']][:4]
@@ -302,7 +301,6 @@ async def show_stats_admin(message: types.Message):
 async def get_users_list(message: types.Message):
     if message.from_user.id != int(ADMIN_ID): return
     wait_msg = await message.answer("⏳ Ro'yxat yuklanmoqda...")
-    # YANGILIK: ORDER BY joined_at ASC - birinchi qo'shilganlar oldin chiqadi
     async with db_pool.acquire() as conn:
         users = await conn.fetch("SELECT user_id, name, phone_number, COALESCE(score, 0) as score, tests_taken FROM users ORDER BY joined_at ASC")
     if not users: return await wait_msg.edit_text("Bazada hali foydalanuvchilar yo'q.")
@@ -351,7 +349,6 @@ async def bekor_qilish(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("❌ Jarayon bekor qilindi.", reply_markup=asosiy_menyu)
 
-# YANGILIK: /stop buyrug'i uchun maxsus funksiya
 @dp.message(Command("stop"))
 async def stop_quiz_command(message: types.Message):
     stopped = False
@@ -365,7 +362,7 @@ async def stop_quiz_command(message: types.Message):
     if ACTIVE_TESTS.get(user_id):
         ACTIVE_TESTS[user_id] = False
         if user_id in USER_EVENTS:
-            USER_EVENTS[user_id].set() # Taymerni tezkor kesish uchun
+            USER_EVENTS[user_id].set() 
         stopped = True
         
     if stopped:
@@ -389,13 +386,15 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                 
                 await message.answer(f"🚀 Test boshlanmoqda... (Taymer: {taymer} soniya)\nTo'xtatish uchun istalgan vaqtda /stop ni bosing.", reply_markup=ReplyKeyboardRemove())
                 savollar = json.loads(quiz_row['savollar'])
+                
+                # YANGILIK: Sessiya ballarini nolga tushirish
                 SESSION_SCORES[message.from_user.id] = 0 
                 USER_EVENTS[message.from_user.id] = asyncio.Event()
-                ACTIVE_TESTS[message.from_user.id] = True # Test boshlandi
+                ACTIVE_TESTS[message.from_user.id] = True 
                 
                 for i, data in enumerate(savollar, 1):
                     if not ACTIVE_TESTS.get(message.from_user.id, True):
-                        break # /stop bosilsa tsikldan uziladi
+                        break 
 
                     q = f"[{i}/{len(savollar)}] {data['savol'][:200]}"
                     opts = [str(opt)[:100] for opt in data['variantlar']][:4]
@@ -413,7 +412,10 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                     await asyncio.sleep(0.5)
                     
                 ACTIVE_TESTS[message.from_user.id] = False
-                await message.answer("🏁 **Test yakuniga yetdi!**", reply_markup=asosiy_menyu, parse_mode="Markdown")
+                
+                # YANGILIK: Test oxirida aniq nechta topganini e'lon qilish
+                correct_ans = SESSION_SCORES.get(message.from_user.id, 0)
+                await message.answer(f"🏁 **Test yakuniga yetdi!**\n\n📊 Natijangiz: {len(savollar)} ta savoldan **{correct_ans} tasiga** to'g'ri javob berdingiz! 🎯", reply_markup=asosiy_menyu, parse_mode="Markdown")
                 return
             else:
                 return await message.answer("⚠️ Bu test eskirgan yoki topilmadi.", reply_markup=asosiy_menyu)
@@ -437,6 +439,10 @@ async def handle_poll_answer(poll_answer: types.PollAnswer):
         async with db_pool.acquire() as conn:
             await conn.execute("UPDATE users SET score = COALESCE(score, 0) + $1 WHERE user_id = $2", ball, str(user_id_int))
             
+        # YANGILIK: To'g'ri javoblar sonini sessiyada saqlab borish
+        if user_id_int in SESSION_SCORES:
+            SESSION_SCORES[user_id_int] += 1
+            
     if user_id_int in USER_EVENTS:
         USER_EVENTS[user_id_int].set()
 
@@ -450,14 +456,33 @@ async def show_profile(message: types.Message):
     else: 
         await message.answer("Siz hali bazada yo'qsiz. /start ni bosing.")
 
+# YANGILIK: Aqlli Reyting tizimi
 @dp.message(F.text == "🏆 Reyting")
 async def show_reyting(message: types.Message):
     async with db_pool.acquire() as conn:
-        top_users = await conn.fetch("SELECT name, COALESCE(score, 0) as score FROM users ORDER BY score DESC LIMIT 10")
+        top_users = await conn.fetch("SELECT user_id, name, COALESCE(score, 0) as score FROM users ORDER BY score DESC LIMIT 10")
+        me = await conn.fetchrow("SELECT COALESCE(score, 0) as score FROM users WHERE user_id = $1", str(message.from_user.id))
+
     text = "🏆 **TOP-10 QAHRAMONLAR:**\n\n"
+    first_place_score = top_users[0]['score'] if top_users else 0
+    
     for i, u in enumerate(top_users, 1): 
         ism = u['name'] if u['name'] else "A'zo"
+        # O'zini ro'yxatda belgilab ko'rsatish
+        if str(u['user_id']) == str(message.from_user.id):
+            ism = "👉 " + ism 
         text += f"{i}. {ism} — {u['score']} ball\n"
+        
+    if me:
+        my_score = me['score']
+        if my_score < first_place_score:
+            diff = first_place_score - my_score
+            # 1 ta to'g'ri javob 2 ball beradi, shuning uchun 2 ga bo'lamiz
+            needed_answers = (diff // 2) + (diff % 2) 
+            text += f"\n💡 **Ma'lumot:** 1-o'ringa chiqish uchun sizga yana kamida **{needed_answers} ta to'g'ri javob** kerak! Olg'a! 🚀"
+        elif my_score == first_place_score and first_place_score > 0:
+            text += f"\n💡 **Ma'lumot:** Tabriklaymiz, hozirda peshqadamsiz! 🥇"
+            
     await message.answer(text, parse_mode="Markdown")
 
 # --- 1-CLICK TEST TIZIMI ---
