@@ -29,6 +29,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 ADMIN_ID = 5031441892  # <--- DIQQAT: O'ZINGIZNING TELEGRAM ID RAQAMINGIZNI SHU YERGA YOZING!
+CHANNEL_ID = "@Engineer_XA" # <--- DIQQAT: MAJBURUY OBUNA UCHUN KANALINGIZNI YOZING!
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -92,6 +93,17 @@ def read_file_sync(file_data, filename):
     except Exception as e: print(f"Fayl xatosi: {e}")
     return text
 
+# YANGILIK: Kanalga a'zolikni tekshiruvchi funksiya
+async def is_subscribed(user_id):
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        if member.status in ['left', 'kicked', 'restricted']:
+            return False
+        return True
+    except Exception:
+        # Agar bot kanalga admin qilinmagan bo'lsa, xato bermasligi uchun ruxsat beradi
+        return True
+
 # --- FSM VA MENYULAR ---
 class QuickQuizForm(StatesGroup):
     source_type = State()
@@ -143,6 +155,12 @@ admin_menyu = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="📣 Xabar tarqatish"), KeyboardButton(text="🔙 Bosh menyu")]
 ], resize_keyboard=True)
 
+# YANGILIK: Majburiy obuna klaviaturasi
+obuna_kb = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="📢 Kanalga a'zo bo'lish", url=f"https://t.me/{CHANNEL_ID.replace('@', '')}")],
+    [InlineKeyboardButton(text="✅ Tasdiqlash", callback_data="check_sub")]
+])
+
 
 # --- IXTIYORIY RAQAMNI QABUL QILISH ---
 @dp.message(F.contact)
@@ -163,7 +181,6 @@ async def ask_feedback(message: types.Message, state: FSMContext):
     await message.answer("✍️ Bot bo'yicha qanday taklifingiz yoki topgan xatoligingiz bor? Marhamat, (matn, rasm, video yoki stiker) yuboring:", reply_markup=ReplyKeyboardMarkup(keyboard=[bekor_tugma], resize_keyboard=True))
     await state.set_state(FeedbackState.kutish)
 
-# YANGILANGAN: Har qanday turdagi xabarni qabul qiladi
 @dp.message(FeedbackState.kutish)
 async def receive_feedback(message: types.Message, state: FSMContext):
     if message.text == "🔙 Bekor qilish":
@@ -171,11 +188,8 @@ async def receive_feedback(message: types.Message, state: FSMContext):
         return await message.answer("Bekor qilindi.", reply_markup=asosiy_menyu)
 
     try:
-        # 1. Adminga kimdan kelganini bildirish uchun pasport (ID) yuboramiz
         info_text = f"📬 **YANGI XABAR (Taklif/Xato)**\n👤 Kimdan: [{message.from_user.full_name}](tg://user?id={message.from_user.id})\n🆔 ID: `{message.from_user.id}`"
         await bot.send_message(ADMIN_ID, info_text, parse_mode="Markdown")
-        
-        # 2. Foydalanuvchi nima yuborgan bo'lsa (Stiker, Rasm, Matn), xuddi o'shani adminga nusxalaymiz
         await bot.copy_message(chat_id=ADMIN_ID, from_chat_id=message.chat.id, message_id=message.message_id)
         
         await message.answer("✅ Xabaringiz adminga muvaffaqiyatli yetkazildi! Fikringiz uchun rahmat.", reply_markup=asosiy_menyu)
@@ -183,25 +197,31 @@ async def receive_feedback(message: types.Message, state: FSMContext):
         await message.answer("⚠️ Adminga xabar yuborishda xatolik yuz berdi.", reply_markup=asosiy_menyu)
     await state.clear()
 
-# YANGILANGAN: Admin har qanday formatda (hatto voice yoki rasm) javob yozishi mumkin
 @dp.message(F.reply_to_message)
 async def admin_reply_handler(message: types.Message):
     if message.from_user.id != int(ADMIN_ID): return
     
-    # Biz faqat ID yozilgan matnga qilingan reply'ni qabul qilamiz
     original_text = message.reply_to_message.text
     if not original_text or "🆔 ID:" not in original_text: return
     
     try:
         target_id = original_text.split("🆔 ID: ")[1].split("\n")[0].strip('`')
-        
         await bot.send_message(chat_id=target_id, text="👨‍💻 **Admindan javob:**", parse_mode="Markdown")
-        # Admin nima yuborsa (stiker, voice, matn), foydalanuvchiga shuni nusxalab beramiz
         await bot.copy_message(chat_id=target_id, from_chat_id=message.chat.id, message_id=message.message_id)
-        
         await message.answer("✅ Javobingiz foydalanuvchiga yuborildi!")
     except Exception as e:
         await message.answer(f"⚠️ Yuborishda xatolik: {e}")
+
+
+# --- MAJBURIY OBUNA TASDIQLASH ---
+@dp.callback_query(F.data == "check_sub")
+async def check_sub_handler(call: types.CallbackQuery):
+    if await is_subscribed(call.from_user.id):
+        await call.message.delete()
+        await call.message.answer("✅ Rahmat! Kanalga a'zo bo'ldingiz. Endi botdan to'liq foydalanishingiz mumkin.\n\nMarhamat, kerakli bo'limni tanlang:", reply_markup=asosiy_menyu)
+    else:
+        await call.answer("❌ Hali kanalga a'zo bo'lmapsiz! Iltimos, a'zo bo'lib qaytadan tasdiqlang.", show_alert=True)
+
 
 # --- GURUHLARDA JONLI TEST (GROUP MODE) ---
 @dp.message(Command("quiz"))
@@ -400,7 +420,6 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                 await message.answer(f"🚀 Test boshlanmoqda... (Taymer: {taymer} soniya)\nTo'xtatish uchun istalgan vaqtda /stop ni bosing.", reply_markup=ReplyKeyboardRemove())
                 savollar = json.loads(quiz_row['savollar'])
                 
-                # YANGILIK: Sessiya ballarini nolga tushirish
                 SESSION_SCORES[message.from_user.id] = 0 
                 USER_EVENTS[message.from_user.id] = asyncio.Event()
                 ACTIVE_TESTS[message.from_user.id] = True 
@@ -425,8 +444,6 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                     await asyncio.sleep(0.5)
                     
                 ACTIVE_TESTS[message.from_user.id] = False
-                
-                # YANGILIK: Test oxirida aniq nechta topganini e'lon qilish
                 correct_ans = SESSION_SCORES.get(message.from_user.id, 0)
                 await message.answer(f"🏁 **Test yakuniga yetdi!**\n\n📊 Natijangiz: {len(savollar)} ta savoldan **{correct_ans} tasiga** to'g'ri javob berdingiz! 🎯", reply_markup=asosiy_menyu, parse_mode="Markdown")
                 return
@@ -452,7 +469,6 @@ async def handle_poll_answer(poll_answer: types.PollAnswer):
         async with db_pool.acquire() as conn:
             await conn.execute("UPDATE users SET score = COALESCE(score, 0) + $1 WHERE user_id = $2", ball, str(user_id_int))
             
-        # YANGILIK: To'g'ri javoblar sonini sessiyada saqlab borish
         if user_id_int in SESSION_SCORES:
             SESSION_SCORES[user_id_int] += 1
             
@@ -469,7 +485,6 @@ async def show_profile(message: types.Message):
     else: 
         await message.answer("Siz hali bazada yo'qsiz. /start ni bosing.")
 
-# YANGILIK: Aqlli Reyting tizimi
 @dp.message(F.text == "🏆 Reyting")
 async def show_reyting(message: types.Message):
     async with db_pool.acquire() as conn:
@@ -481,7 +496,6 @@ async def show_reyting(message: types.Message):
     
     for i, u in enumerate(top_users, 1): 
         ism = u['name'] if u['name'] else "A'zo"
-        # O'zini ro'yxatda belgilab ko'rsatish
         if str(u['user_id']) == str(message.from_user.id):
             ism = "👉 " + ism 
         text += f"{i}. {ism} — {u['score']} ball\n"
@@ -490,7 +504,6 @@ async def show_reyting(message: types.Message):
         my_score = me['score']
         if my_score < first_place_score:
             diff = first_place_score - my_score
-            # 1 ta to'g'ri javob 2 ball beradi, shuning uchun 2 ga bo'lamiz
             needed_answers = (diff // 2) + (diff % 2) 
             text += f"\n💡 **Ma'lumot:** 1-o'ringa chiqish uchun sizga yana kamida **{needed_answers} ta to'g'ri javob** kerak! Olg'a! 🚀"
         elif my_score == first_place_score and first_place_score > 0:
@@ -499,20 +512,31 @@ async def show_reyting(message: types.Message):
     await message.answer(text, parse_mode="Markdown")
 
 # --- 1-CLICK TEST TIZIMI ---
+# YANGILIK: Test yaratishdan oldin majburiy obunani so'rash
 @dp.message(F.text == "📸 Rasmdan test")
-async def ask_photo(message: types.Message): await message.answer("📸 Lug'at daftaringizni aniq rasmga olib yuboring.")
+async def ask_photo(message: types.Message): 
+    if not await is_subscribed(message.from_user.id):
+        return await message.answer("⚠️ Botdan foydalanish va test tuzish uchun avval rasmiy kanalimizga a'zo bo'ling!", reply_markup=obuna_kb)
+    await message.answer("📸 Lug'at daftaringizni aniq rasmga olib yuboring.")
 
 @dp.message(F.text == "📚 Matn/Mavzudan test")
-async def ask_topic(message: types.Message): await message.answer("📄 PDF/Word fayl tashlang YOKI biror mavzuni yozing.")
+async def ask_topic(message: types.Message): 
+    if not await is_subscribed(message.from_user.id):
+        return await message.answer("⚠️ Botdan foydalanish va test tuzish uchun avval rasmiy kanalimizga a'zo bo'ling!", reply_markup=obuna_kb)
+    await message.answer("📄 PDF/Word fayl tashlang YOKI biror mavzuni yozing.")
 
 @dp.message(F.photo)
 async def auto_photo_handler(message: types.Message, state: FSMContext):
+    if not await is_subscribed(message.from_user.id):
+        return await message.answer("⚠️ Botdan foydalanish uchun kanalga a'zo bo'ling!", reply_markup=obuna_kb)
     await state.update_data(source_type='image', payload=message.photo[-1].file_id)
     await state.set_state(QuickQuizForm.soni)
     await message.answer("📸 Rasm qabul qilindi! Nechta savol tuzamiz?", reply_markup=soni_menyu)
 
 @dp.message(F.document)
 async def auto_doc_handler(message: types.Message, state: FSMContext):
+    if not await is_subscribed(message.from_user.id):
+        return await message.answer("⚠️ Botdan foydalanish uchun kanalga a'zo bo'ling!", reply_markup=obuna_kb)
     if not (message.document.file_name.endswith('.pdf') or message.document.file_name.endswith('.docx')): return await message.answer("⚠️ Faqat PDF yoki Word fayllar.")
     await state.update_data(source_type='file', payload=message.document.file_id, filename=message.document.file_name)
     await state.set_state(QuickQuizForm.soni)
@@ -521,6 +545,8 @@ async def auto_doc_handler(message: types.Message, state: FSMContext):
 @dp.message(StateFilter(None), F.text, ~F.text.in_(["📸 Rasmdan test", "📚 Matn/Mavzudan test", "📊 Mening natijalarim", "🏆 Reyting", "🔙 Bekor qilish", "/start", "/stop", "/admin", "💬 Taklif va Xatolar", "➡️ Asosiy menyuga o'tish", "🇺🇿 O'zbek tili", "🇷🇺 Русский", "🇬🇧 English"]))
 async def auto_topic_handler(message: types.Message, state: FSMContext):
     if message.text.isdigit(): return
+    if not await is_subscribed(message.from_user.id):
+        return await message.answer("⚠️ Botdan foydalanish uchun kanalga a'zo bo'ling!", reply_markup=obuna_kb)
     await state.update_data(source_type='topic', payload=message.text)
     await state.set_state(QuickQuizForm.soni)
     await message.answer("🧠 Mavzu qabul qilindi! Nechta savol tuzamiz?", reply_markup=soni_menyu)
