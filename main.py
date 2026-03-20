@@ -490,7 +490,6 @@ async def show_profile(message: types.Message, state: FSMContext):
 async def show_reyting(message: types.Message):
     try:
         async with db_pool.acquire() as conn:
-            # YANGILIK: NULLS LAST qoidasi orqali nol ballilar avtomatik pastga tushadi
             top_users = await conn.fetch("SELECT user_id, name, COALESCE(score, 0) as score FROM users ORDER BY score DESC NULLS LAST LIMIT 10")
             me = await conn.fetchrow("SELECT COALESCE(score, 0) as score FROM users WHERE user_id = $1", str(message.from_user.id))
 
@@ -498,16 +497,20 @@ async def show_reyting(message: types.Message):
             return await message.answer("🏆 Reytingda hali hech kim yo'q! Birinchi bo'lib test yeching! 🚀")
 
         text = "🏆 **TOP-10 QAHRAMONLAR:**\n\n"
-        first_place_score = int(top_users[0]['score']) # Qat'iy butun songa o'tkazish
+        first_place_score = int(top_users[0]['score']) 
         
         for i, u in enumerate(top_users, 1): 
             ism = u['name'] if u['name'] else "A'zo"
+            
+            # YANGILIK: Ism ichidagi xato beruvchi maxsus belgilarni tozalab tashlaymiz!
+            ism = str(ism).replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
+            
             if str(u['user_id']) == str(message.from_user.id):
                 ism = "👉 " + ism 
             text += f"{i}. {ism} — {int(u['score'])} ball\n"
             
         if me:
-            my_score = int(me['score']) # Qat'iy butun songa o'tkazish
+            my_score = int(me['score'])
             if my_score < first_place_score:
                 diff = first_place_score - my_score
                 needed_answers = (diff // 2) + (diff % 2) 
