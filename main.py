@@ -476,9 +476,10 @@ async def handle_poll_answer(poll_answer: types.PollAnswer):
         USER_EVENTS[user_id_int].set()
 
 @dp.message(F.text == "📊 Mening natijalarim")
-async def show_profile(message: types.Message):
+async def show_profile(message: types.Message, state: FSMContext):
+    await state.clear() # YANGILIK: Bot boshqa narsa kutayotgan bo'lsa, uni to'xtatadi
     async with db_pool.acquire() as conn:
-        u = await conn.fetchrow("SELECT COALESCE(score, 0) as score, tests_taken, image_tests_made, file_tests_made FROM users WHERE user_id = $1", str(message.from_user.id))
+        u = await conn.fetchrow("SELECT COALESCE(score, 0) as score, COALESCE(tests_taken, 0) as tests_taken, COALESCE(image_tests_made, 0) as image_tests_made, COALESCE(file_tests_made, 0) as file_tests_made FROM users WHERE user_id = $1", str(message.from_user.id))
     if u: 
         text = f"📊 **Shaxsiy Statistika:**\n🎯 Yig'ilgan ball: {u['score']}\n✅ Yechilgan testlar: {u['tests_taken']}\n\n🛠 **Siz yaratgan testlar:**\n📸 Rasmdan: {u['image_tests_made']} ta\n📄 Fayldan: {u['file_tests_made']} ta"
         await message.answer(text, parse_mode="Markdown")
@@ -486,30 +487,39 @@ async def show_profile(message: types.Message):
         await message.answer("Siz hali bazada yo'qsiz. /start ni bosing.")
 
 @dp.message(F.text == "🏆 Reyting")
-async def show_reyting(message: types.Message):
-    async with db_pool.acquire() as conn:
-        top_users = await conn.fetch("SELECT user_id, name, COALESCE(score, 0) as score FROM users ORDER BY score DESC LIMIT 10")
-        me = await conn.fetchrow("SELECT COALESCE(score, 0) as score FROM users WHERE user_id = $1", str(message.from_user.id))
+async def show_reyting(message: types.Message, state: FSMContext):
+    await state.clear() # YANGILIK: Qotib qolishning oldini oladi
+    try:
+        async with db_pool.acquire() as conn:
+            # YANGILIK: ORDER BY COALESCE(score, 0) DESC - Endi 0 ballilar tepaga chiqib qolmaydi!
+            top_users = await conn.fetch("SELECT user_id, name, COALESCE(score, 0) as score FROM users ORDER BY COALESCE(score, 0) DESC LIMIT 10")
+            me = await conn.fetchrow("SELECT COALESCE(score, 0) as score FROM users WHERE user_id = $1", str(message.from_user.id))
 
-    text = "🏆 **TOP-10 QAHRAMONLAR:**\n\n"
-    first_place_score = top_users[0]['score'] if top_users else 0
-    
-    for i, u in enumerate(top_users, 1): 
-        ism = u['name'] if u['name'] else "A'zo"
-        if str(u['user_id']) == str(message.from_user.id):
-            ism = "👉 " + ism 
-        text += f"{i}. {ism} — {u['score']} ball\n"
+        if not top_users:
+            return await message.answer("🏆 Reytingda hali hech kim yo'q! Birinchi bo'lib test yeching! 🚀")
+
+        text = "🏆 **TOP-10 QAHRAMONLAR:**\n\n"
+        first_place_score = top_users[0]['score']
         
-    if me:
-        my_score = me['score']
-        if my_score < first_place_score:
-            diff = first_place_score - my_score
-            needed_answers = (diff // 2) + (diff % 2) 
-            text += f"\n💡 **Ma'lumot:** 1-o'ringa chiqish uchun sizga yana kamida **{needed_answers} ta to'g'ri javob** kerak! Olg'a! 🚀"
-        elif my_score == first_place_score and first_place_score > 0:
-            text += f"\n💡 **Ma'lumot:** Tabriklaymiz, hozirda peshqadamsiz! 🥇"
+        for i, u in enumerate(top_users, 1): 
+            ism = u['name'] if u['name'] else "A'zo"
+            if str(u['user_id']) == str(message.from_user.id):
+                ism = "👉 " + ism 
+            text += f"{i}. {ism} — {u['score']} ball\n"
             
-    await message.answer(text, parse_mode="Markdown")
+        if me:
+            my_score = me['score']
+            if my_score < first_place_score:
+                diff = first_place_score - my_score
+                needed_answers = (diff // 2) + (diff % 2) 
+                text += f"\n💡 **Ma'lumot:** 1-o'ringa chiqish uchun sizga yana kamida **{needed_answers} ta to'g'ri javob** kerak! Olg'a! 🚀"
+            elif my_score == first_place_score and first_place_score > 0:
+                text += f"\n💡 **Ma'lumot:** Tabriklaymiz, peshqadamsiz! 🥇"
+                
+        await message.answer(text, parse_mode="Markdown")
+    except Exception as e:
+        print(f"REYTING XATOSI: {e}")
+        await message.answer("⚠️ Reytingni yuklashda xatolik yuz berdi. Iltimos, qayta urinib ko'ring.")
 
 # --- 1-CLICK TEST TIZIMI ---
 # YANGILIK: Test yaratishdan oldin majburiy obunani so'rash
