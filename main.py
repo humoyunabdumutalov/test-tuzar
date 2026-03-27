@@ -53,6 +53,9 @@ async def init_db_pool():
         await conn.execute('''CREATE TABLE IF NOT EXISTS daily_challenge (date DATE PRIMARY KEY, quiz_id TEXT)''')
         await conn.execute('''CREATE TABLE IF NOT EXISTS daily_results (date DATE, user_id TEXT, name TEXT, score INTEGER, PRIMARY KEY (date, user_id))''')
         
+        # YANGILIK: Duel o'yinlarida natijalarni solishtirish uchun jadval
+        await conn.execute('''CREATE TABLE IF NOT EXISTS quiz_results (quiz_id TEXT, user_id TEXT, score INTEGER, PRIMARY KEY (quiz_id, user_id))''')
+        
         columns_to_add = ["image_tests_made", "file_tests_made", "topic_tests_made"]
         for col in columns_to_add:
             try: await conn.execute(f"ALTER TABLE users ADD COLUMN {col} INTEGER DEFAULT 0")
@@ -119,7 +122,7 @@ class QuickQuizForm(StatesGroup):
 
 class AdminState(StatesGroup):
     xabar_kutish = State()
-    kun_testi_kutish = State() # YANGILIK: Kun testi ID sini kutish uchun holat
+    kun_testi_kutish = State()
 
 class FeedbackState(StatesGroup):
     kutish = State()
@@ -155,7 +158,6 @@ vaqt_menyu = ReplyKeyboardMarkup(keyboard=[
     bekor_tugma
 ], resize_keyboard=True)
 
-# YANGILIK: Admin menyusiga "Kun Testini O'rnatish" tugmasi qo'shildi
 admin_menyu = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="📊 Umumiy Statistika"), KeyboardButton(text="👥 Foydalanuvchilar")],
     [KeyboardButton(text="📣 Xabar tarqatish"), KeyboardButton(text="🎯 Kun Testini O'rnatish")],
@@ -324,11 +326,10 @@ async def admin_panel(message: types.Message):
     if message.from_user.id != int(ADMIN_ID): return
     await message.answer("👑 **Admin Panelga Xush Kelibsiz!**", reply_markup=admin_menyu, parse_mode="Markdown")
 
-# YANGILIK: Tugma orqali Kun Testini o'rnatish
 @dp.message(F.text == "🎯 Kun Testini O'rnatish")
 async def ask_daily_quiz_id(message: types.Message, state: FSMContext):
     if message.from_user.id != int(ADMIN_ID): return
-    await message.answer("✍️ Bugungi Kun Testini o'rnatish uchun testning **8 xonali ID raqamini** yozib yuboring:\n\n*(ID raqamini bot yaratgan test ssilkasining eng oxiridan topishingiz mumkin)*", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔙 Orqaga")]], resize_keyboard=True))
+    await message.answer("✍️ Bugungi Kun Testini o'rnatish uchun testning **8 xonali ID raqamini** yozib yuboring:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔙 Orqaga")]], resize_keyboard=True))
     await state.set_state(AdminState.kun_testi_kutish)
 
 @dp.message(AdminState.kun_testi_kutish)
@@ -459,15 +460,26 @@ async def stop_quiz_command(message: types.Message):
     else:
         await message.answer("⚠️ Hozirda faol test mavjud emas.", reply_markup=asosiy_menyu)
 
+# YANGILIK: START BUYRUG'IDA DUEL MANTIG'INI USHLASH
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext, command: CommandObject = None):
     await state.clear()
     await add_user(message.from_user.id, message.from_user.first_name)
 
     if command and command.args:
-        quiz_id = command.args
-        await start_quiz_logic(message, quiz_id, is_daily=False)
-        return
+        args = command.args
+        # Agar bu do'sti tashlagan duel ssilkasi bo'lsa
+        if args.startswith("duel_"):
+            parts = args.split("_")
+            if len(parts) >= 3:
+                quiz_id = parts[1]
+                challenger_id = parts[2]
+                await start_quiz_logic(message, quiz_id, is_daily=False, challenger_id=challenger_id)
+                return
+        else:
+            quiz_id = args
+            await start_quiz_logic(message, quiz_id, is_daily=False)
+            return
                 
     async with db_pool.acquire() as conn:
         user_record = await conn.fetchrow("SELECT phone_number FROM users WHERE user_id = $1", str(message.from_user.id))
@@ -504,7 +516,8 @@ async def play_daily_challenge(message: types.Message, state: FSMContext):
     await start_quiz_logic(message, daily['quiz_id'], is_daily=True)
 
 
-async def start_quiz_logic(message: types.Message, quiz_id: str, is_daily: bool):
+# YANGILANGAN: TEST BOSHLASH VA DUEL HISOB-KITOBI
+async def start_quiz_logic(message: types.Message, quiz_id: str, is_daily: bool, challenger_id: str = None):
     async with db_pool.acquire() as conn:
         quiz_row = await conn.fetchrow("SELECT savollar, timer FROM quizzes WHERE quiz_id = $1", quiz_id)
         
@@ -540,12 +553,31 @@ async def start_quiz_logic(message: types.Message, quiz_id: str, is_daily: bool)
         ACTIVE_TESTS[message.from_user.id] = False
         correct_ans = SESSION_SCORES.get(message.from_user.id, 0)
         
+        # Test natijasini xotiraga (baza) saqlab qolamiz (Duel uchun)
+        await conn.execute("INSERT INTO quiz_results (quiz_id, user_id, score) VALUES ($1, $2, $3) ON CONFLICT (quiz_id, user_id) DO UPDATE SET score = GREATEST(quiz_results.score, $3)", quiz_id, str(message.from_user.id), correct_ans)
+        
+        duel_msg = ""
+        # Agar testga do'sti chaqirgan bo'lsa, natijalarni solishtiramiz
+        if challenger_id and challenger_id != str(message.from_user.id):
+            ch_data = await conn.fetchrow("SELECT r.score, u.name FROM quiz_results r JOIN users u ON r.user_id = u.user_id WHERE r.quiz_id = $1 AND r.user_id = $2", quiz_id, challenger_id)
+            if ch_data:
+                ch_score = ch_data['score']
+                ch_name = str(ch_data['name']).replace('*', '') or "Do'stingiz"
+                if correct_ans > ch_score:
+                    duel_msg = f"\n\n⚔️ **DUEL:** Siz {ch_name}ni yengdingiz! (Siz: {correct_ans} | U: {ch_score}) 🏆"
+                elif correct_ans < ch_score:
+                    duel_msg = f"\n\n⚔️ **DUEL:** {ch_name} sizni yengdi! (Siz: {correct_ans} | U: {ch_score}) 😔"
+                else:
+                    duel_msg = f"\n\n⚔️ **DUEL:** {ch_name} bilan durang! (Siz: {correct_ans} | U: {ch_score}) 🤝"
+            else:
+                duel_msg = "\n\n⚔️ **DUEL:** Do'stingiz hali bu testni yechmagan ko'rinadi. Natijangiz saqlandi, unga maqtanishingiz mumkin! 😎"
+
         if is_daily:
             today = datetime.date.today()
-            await conn.execute("INSERT INTO daily_results (date, user_id, name, score) VALUES ($1, $2, $3, $4)", today, str(message.from_user.id), message.from_user.first_name, correct_ans * 2)
-            await message.answer(f"🏁 **Global Test yakuniga yetdi!**\n\n📊 Natijangiz: {len(savollar)} ta savoldan **{correct_ans} tasiga** to'g'ri javob berdingiz!\nReytingni ko'rish uchun yana '🌍 Kun Testi' tugmasini bosing.", reply_markup=asosiy_menyu, parse_mode="Markdown")
+            await conn.execute("INSERT INTO daily_results (date, user_id, name, score) VALUES ($1, $2, $3, $4) ON CONFLICT (date, user_id) DO NOTHING", today, str(message.from_user.id), message.from_user.first_name, correct_ans * 2)
+            await message.answer(f"🏁 **Global Test yakuniga yetdi!**\n\n📊 Natijangiz: {len(savollar)} ta savoldan **{correct_ans} tasiga** to'g'ri javob berdingiz!{duel_msg}\nReytingni ko'rish uchun yana '🌍 Kun Testi' tugmasini bosing.", reply_markup=asosiy_menyu, parse_mode="Markdown")
         else:
-            await message.answer(f"🏁 **Test yakuniga yetdi!**\n\n📊 Natijangiz: {len(savollar)} ta savoldan **{correct_ans} tasiga** to'g'ri javob berdingiz! 🎯", reply_markup=asosiy_menyu, parse_mode="Markdown")
+            await message.answer(f"🏁 **Test yakuniga yetdi!**\n\n📊 Natijangiz: {len(savollar)} ta savoldan **{correct_ans} tasiga** to'g'ri javob berdingiz! 🎯{duel_msg}", reply_markup=asosiy_menyu, parse_mode="Markdown")
         
         SESSION_SCORES.pop(message.from_user.id, None)
 
@@ -697,14 +729,11 @@ async def generate_magic(message: types.Message, state: FSMContext):
     
     file_data = None 
     try:
-        # YANGILIK: Promptni aqlli (dinamik) qildik!
         if source == 'topic':
-            # MAVZU UCHUN: Erkinlik beramiz
             qatiy_buyruq = f"DIQQAT: Sen tajribali test tuzuvchisan. Vazifang faqat '{data['payload']}' mavzusida {soni} ta sifatli test tuzish. Test tili: {til_nomi}. Savollarda 'matnda' yoki 'matnga ko'ra' degan so'zlarni UMUMAN ishlatma! FAQAT JSON ARRAY qaytar. Namuna: [{{\"savol\": \"O'zbekiston poytaxti qayer?\", \"variantlar\": [\"Toshkent\", \"Samarqand\", \"Xiva\", \"Buxoro\"], \"togri_index\": 0}}]"
             response = await asyncio.to_thread(model.generate_content, qatiy_buyruq)
             
         else:
-            # FAYL VA RASM UCHUN: Matnga bog'lab qo'yamiz
             qatiy_buyruq = f"DIQQAT: Vazifang faqat va faqat berilgan matn/rasm asosida {soni} ta test tuzish. Mavzudan umuman tashqariga chiqma. Test tili: {til_nomi}. Agar matnda ma'lumot yetishmasa, to'qib yozma, boridan tuz. FAQAT JSON ARRAY qaytar. Namuna: [{{\"savol\": \"Matnga ko'ra asosiy qahramon kim?\", \"variantlar\": [\"Ali\", \"Vali\", \"G'ani\", \"Sami\"], \"togri_index\": 0}}]"
             
             if source == 'image':
@@ -745,16 +774,23 @@ async def generate_magic(message: types.Message, state: FSMContext):
             elif source == 'topic': await conn.execute("UPDATE users SET topic_tests_made = topic_tests_made + 1 WHERE user_id = $1", str(message.from_user.id))
 
         bot_info = await bot.get_me()
+        
+        # YANGILANGAN Ssilkalar tizimi
+        duel_param = f"duel_{quiz_id}_{message.from_user.id}"
+        duel_link = f"https://t.me/{bot_info.username}?start={duel_param}"
         test_link = f"https://t.me/{bot_info.username}?start={quiz_id}"
         
         inline_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 O'zim ishlash", url=test_link)], 
-            [InlineKeyboardButton(text="⚔️ Do'stga yuborish (Duel)", url=f"https://t.me/share/url?url={test_link}&text=Men TestTuzar botida zo'r test tuzdim! Kel, duel o'ynaymiz! 😎")],
+            [InlineKeyboardButton(text="⚔️ Do'stga yuborish (Duel)", url=f"https://t.me/share/url?url={duel_link}&text=Men TestTuzar botida zo'r test tuzdim! Kel, duel o'ynaymiz! 😎")],
             [InlineKeyboardButton(text="📥 Word format", callback_data=f"down_{quiz_id}"), InlineKeyboardButton(text="📊 Excel (Moodle)", callback_data=f"excel_{quiz_id}")]
         ])
         
         await wait_msg.delete()
-        msg_text = f"✅ **Testingiz tayyor! ({len(savollar)} ta savol)**\n*(Har biriga {tanlangan_vaqt} soniya)*\n\nQuyidagi tugmalardan birini tanlang:"
+        
+        # YANGILANGAN Xabar: Test kodi (ID) yana paydo bo'ldi
+        msg_text = f"✅ **Testingiz tayyor! ({len(savollar)} ta savol)**\n*(Har biriga {tanlangan_vaqt} soniya)*\n\n🆔 **Test kodi:** `{quiz_id}`\n*(Guruhda o'ynash uchun botni guruhga qo'shib, /quiz {quiz_id} deb yozing)*\n\nQuyidagi tugmalardan birini tanlang:"
+        
         await message.answer(msg_text, reply_markup=inline_kb, parse_mode="Markdown")
         await message.answer("Asosiy menyuga qaytdingiz.", reply_markup=asosiy_menyu)
         await state.clear()
