@@ -4,6 +4,7 @@ import io
 import json
 import uuid
 import random
+import gc # YANGILIK: Xotirani tozalash uchun
 from contextlib import suppress
 
 # --- QO'SHIMCHA KUTUBXONALAR ---
@@ -93,7 +94,6 @@ def read_file_sync(file_data, filename):
     except Exception as e: print(f"Fayl xatosi: {e}")
     return text
 
-# YANGILIK: Kanalga a'zolikni tekshiruvchi funksiya
 async def is_subscribed(user_id):
     try:
         member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
@@ -101,7 +101,6 @@ async def is_subscribed(user_id):
             return False
         return True
     except Exception:
-        # Agar bot kanalga admin qilinmagan bo'lsa, xato bermasligi uchun ruxsat beradi
         return True
 
 # --- FSM VA MENYULAR ---
@@ -155,7 +154,6 @@ admin_menyu = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="📣 Xabar tarqatish"), KeyboardButton(text="🔙 Bosh menyu")]
 ], resize_keyboard=True)
 
-# YANGILIK: Majburiy obuna klaviaturasi
 obuna_kb = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="📢 Kanalga a'zo bo'lish", url=f"https://t.me/{CHANNEL_ID.replace('@', '')}")],
     [InlineKeyboardButton(text="✅ Tasdiqlash", callback_data="check_sub")]
@@ -446,6 +444,9 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                 ACTIVE_TESTS[message.from_user.id] = False
                 correct_ans = SESSION_SCORES.get(message.from_user.id, 0)
                 await message.answer(f"🏁 **Test yakuniga yetdi!**\n\n📊 Natijangiz: {len(savollar)} ta savoldan **{correct_ans} tasiga** to'g'ri javob berdingiz! 🎯", reply_markup=asosiy_menyu, parse_mode="Markdown")
+                
+                # Tozalash
+                SESSION_SCORES.pop(message.from_user.id, None)
                 return
             else:
                 return await message.answer("⚠️ Bu test eskirgan yoki topilmadi.", reply_markup=asosiy_menyu)
@@ -477,7 +478,7 @@ async def handle_poll_answer(poll_answer: types.PollAnswer):
 
 @dp.message(F.text == "📊 Mening natijalarim")
 async def show_profile(message: types.Message, state: FSMContext):
-    await state.clear() # YANGILIK: Bot boshqa narsa kutayotgan bo'lsa, uni to'xtatadi
+    await state.clear()
     async with db_pool.acquire() as conn:
         u = await conn.fetchrow("SELECT COALESCE(score, 0) as score, COALESCE(tests_taken, 0) as tests_taken, COALESCE(image_tests_made, 0) as image_tests_made, COALESCE(file_tests_made, 0) as file_tests_made FROM users WHERE user_id = $1", str(message.from_user.id))
     if u: 
@@ -487,7 +488,8 @@ async def show_profile(message: types.Message, state: FSMContext):
         await message.answer("Siz hali bazada yo'qsiz. /start ni bosing.")
 
 @dp.message(F.text == "🏆 Reyting")
-async def show_reyting(message: types.Message):
+async def show_reyting(message: types.Message, state: FSMContext):
+    await state.clear() 
     try:
         async with db_pool.acquire() as conn:
             top_users = await conn.fetch("SELECT user_id, name, COALESCE(score, 0) as score FROM users ORDER BY score DESC NULLS LAST LIMIT 10")
@@ -501,10 +503,7 @@ async def show_reyting(message: types.Message):
         
         for i, u in enumerate(top_users, 1): 
             ism = u['name'] if u['name'] else "A'zo"
-            
-            # YANGILIK: Ism ichidagi xato beruvchi maxsus belgilarni tozalab tashlaymiz!
             ism = str(ism).replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
-            
             if str(u['user_id']) == str(message.from_user.id):
                 ism = "👉 " + ism 
             text += f"{i}. {ism} — {int(u['score'])} ball\n"
@@ -522,8 +521,8 @@ async def show_reyting(message: types.Message):
     except Exception as e:
         print(f"REYTING XATOSI: {e}") 
         await message.answer("⚠️ Reytingni yuklashda xatolik yuz berdi. Iltimos, qayta urinib ko'ring.")
+
 # --- 1-CLICK TEST TIZIMI ---
-# YANGILIK: Test yaratishdan oldin majburiy obunani so'rash
 @dp.message(F.text == "📸 Rasmdan test")
 async def ask_photo(message: types.Message): 
     if not await is_subscribed(message.from_user.id):
@@ -548,7 +547,14 @@ async def auto_photo_handler(message: types.Message, state: FSMContext):
 async def auto_doc_handler(message: types.Message, state: FSMContext):
     if not await is_subscribed(message.from_user.id):
         return await message.answer("⚠️ Botdan foydalanish uchun kanalga a'zo bo'ling!", reply_markup=obuna_kb)
-    if not (message.document.file_name.endswith('.pdf') or message.document.file_name.endswith('.docx')): return await message.answer("⚠️ Faqat PDF yoki Word fayllar.")
+    
+    # YANGILIK: Fayl hajmini tekshirish (10 MB = 10 * 1024 * 1024 bytes)
+    if message.document.file_size > 10 * 1024 * 1024:
+        return await message.answer("⚠️ Kechirasiz, fayl hajmi juda katta (10 MB dan oshiq). Iltimos, kichikroq fayl yuboring.", reply_markup=asosiy_menyu)
+        
+    if not (message.document.file_name.endswith('.pdf') or message.document.file_name.endswith('.docx')): 
+        return await message.answer("⚠️ Faqat PDF yoki Word fayllar qabul qilinadi.")
+        
     await state.update_data(source_type='file', payload=message.document.file_id, filename=message.document.file_name)
     await state.set_state(QuickQuizForm.soni)
     await message.answer("📄 Fayl qabul qilindi! Nechta savol tuzamiz?", reply_markup=soni_menyu)
@@ -601,6 +607,7 @@ async def generate_magic(message: types.Message, state: FSMContext):
     
     qatiy_buyruq = f"DIQQAT: Vazifang faqat va faqat berilgan matn/mavzu doirasida {soni} ta test tuzish. Mavzudan umuman tashqariga chiqma. Test tili: {til_nomi}. Agar matnda yetarli ma'lumot bo'lmasa, o'zingdan to'qima. FAQAT JSON ARRAY qaytar. Namuna: [{{\"savol\": \"...\", \"variantlar\": [\"A\", \"B\", \"C\", \"D\"], \"togri_index\": 0}}]"
 
+    file_data = None # Xotira uchun o'zgaruvchini oldindan e'lon qilamiz
     try:
         if source == 'image':
             file_info = await bot.get_file(data['payload'])
@@ -610,6 +617,7 @@ async def generate_magic(message: types.Message, state: FSMContext):
             img = Image.open(file_data).convert("RGB")
             prompt = f"{qatiy_buyruq}\nRasmdagi matnlarni diqqat bilan o'qib, shunga doir test tuz."
             response = await asyncio.to_thread(model.generate_content, [prompt, img])
+            del img # Rasmni xotiradan o'chiramiz
             
         elif source == 'file':
             file_info = await bot.get_file(data['payload'])
@@ -619,6 +627,7 @@ async def generate_magic(message: types.Message, state: FSMContext):
             text = await asyncio.to_thread(read_file_sync, file_data, data.get('filename', ''))
             prompt = f"{qatiy_buyruq}\n\nMatn: {text[:15000]}"
             response = await asyncio.to_thread(model.generate_content, prompt)
+            del text # Katta matnni xotiradan o'chiramiz
             
         elif source == 'topic':
             prompt = f"{qatiy_buyruq}\n\nMavzu: '{data['payload']}'"
@@ -660,6 +669,13 @@ async def generate_magic(message: types.Message, state: FSMContext):
         print(f"XATOLIK YUZ BERDI: {e}") 
         await message.answer("⚠️ Sun'iy intellekt xato qildi yoki savol tuza olmadi. Boshqatdan urinib ko'ring.", reply_markup=asosiy_menyu)
         await state.clear()
+        
+    finally:
+        # YANGILIK: Xotirani tozalash uchun Final blok
+        if file_data is not None:
+            file_data.close() # Oqimni yopamiz
+            del file_data
+        gc.collect() # Barcha qolgan axlatlarni majburiy o'chiramiz
 
 
 async def main():
