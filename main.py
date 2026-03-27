@@ -695,33 +695,37 @@ async def generate_magic(message: types.Message, state: FSMContext):
     
     wait_msg = await message.answer("⚙️ Sun'iy intellekt tahlil qilmoqda... Kuting.", reply_markup=ReplyKeyboardRemove())
     
-    qatiy_buyruq = f"DIQQAT: Vazifang faqat va faqat berilgan matn/mavzu doirasida {soni} ta test tuzish. Mavzudan umuman tashqariga chiqma. Test tili: {til_nomi}. Agar matnda yetarli ma'lumot bo'lmasa, o'zingdan to'qima. FAQAT JSON ARRAY qaytar. Namuna: [{{\"savol\": \"...\", \"variantlar\": [\"A\", \"B\", \"C\", \"D\"], \"togri_index\": 0}}]"
-
     file_data = None 
     try:
-        if source == 'image':
-            file_info = await bot.get_file(data['payload'])
-            file_data = io.BytesIO()
-            await bot.download_file(file_info.file_path, destination=file_data)
-            file_data.seek(0)
-            img = Image.open(file_data).convert("RGB")
-            prompt = f"{qatiy_buyruq}\nRasmdagi matnlarni diqqat bilan o'qib, shunga doir test tuz."
-            response = await asyncio.to_thread(model.generate_content, [prompt, img])
-            del img 
+        # YANGILIK: Promptni aqlli (dinamik) qildik!
+        if source == 'topic':
+            # MAVZU UCHUN: Erkinlik beramiz
+            qatiy_buyruq = f"DIQQAT: Sen tajribali test tuzuvchisan. Vazifang faqat '{data['payload']}' mavzusida {soni} ta sifatli test tuzish. Test tili: {til_nomi}. Savollarda 'matnda' yoki 'matnga ko'ra' degan so'zlarni UMUMAN ishlatma! FAQAT JSON ARRAY qaytar. Namuna: [{{\"savol\": \"O'zbekiston poytaxti qayer?\", \"variantlar\": [\"Toshkent\", \"Samarqand\", \"Xiva\", \"Buxoro\"], \"togri_index\": 0}}]"
+            response = await asyncio.to_thread(model.generate_content, qatiy_buyruq)
             
-        elif source == 'file':
-            file_info = await bot.get_file(data['payload'])
-            file_data = io.BytesIO()
-            await bot.download_file(file_info.file_path, destination=file_data)
-            file_data.seek(0)
-            text = await asyncio.to_thread(read_file_sync, file_data, data.get('filename', ''))
-            prompt = f"{qatiy_buyruq}\n\nMatn: {text[:15000]}"
-            response = await asyncio.to_thread(model.generate_content, prompt)
-            del text 
+        else:
+            # FAYL VA RASM UCHUN: Matnga bog'lab qo'yamiz
+            qatiy_buyruq = f"DIQQAT: Vazifang faqat va faqat berilgan matn/rasm asosida {soni} ta test tuzish. Mavzudan umuman tashqariga chiqma. Test tili: {til_nomi}. Agar matnda ma'lumot yetishmasa, to'qib yozma, boridan tuz. FAQAT JSON ARRAY qaytar. Namuna: [{{\"savol\": \"Matnga ko'ra asosiy qahramon kim?\", \"variantlar\": [\"Ali\", \"Vali\", \"G'ani\", \"Sami\"], \"togri_index\": 0}}]"
             
-        elif source == 'topic':
-            prompt = f"{qatiy_buyruq}\n\nMavzu: '{data['payload']}'"
-            response = await asyncio.to_thread(model.generate_content, prompt)
+            if source == 'image':
+                file_info = await bot.get_file(data['payload'])
+                file_data = io.BytesIO()
+                await bot.download_file(file_info.file_path, destination=file_data)
+                file_data.seek(0)
+                img = Image.open(file_data).convert("RGB")
+                prompt_img = f"{qatiy_buyruq}\nRasmdagi matnlarni diqqat bilan o'qib, shunga doir test tuz."
+                response = await asyncio.to_thread(model.generate_content, [prompt_img, img])
+                del img 
+                
+            elif source == 'file':
+                file_info = await bot.get_file(data['payload'])
+                file_data = io.BytesIO()
+                await bot.download_file(file_info.file_path, destination=file_data)
+                file_data.seek(0)
+                text = await asyncio.to_thread(read_file_sync, file_data, data.get('filename', ''))
+                prompt_file = f"{qatiy_buyruq}\n\nMatn: {text[:15000]}"
+                response = await asyncio.to_thread(model.generate_content, prompt_file)
+                del text 
 
         json_matn = clean_json_text(response.text)
         savollar = json.loads(json_matn)
