@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  test_tuzar_bot:
+    build: .
+    container_name: test_tuzar_bot
+    restart: always  # Server o'chib yonsa ham bot avtomatik yonadi
+    env_file:
+      - .env  # Maxfiy tokenlarni shu fayldan oladi
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m" # Loglar server xotirasini to'ldirib yubormasligi uchun
